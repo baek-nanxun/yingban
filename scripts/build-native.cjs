@@ -1,0 +1,10 @@
+const { existsSync, mkdirSync } = require('node:fs');
+const { join } = require('node:path');
+const { execFileSync } = require('node:child_process');
+const root = join(__dirname, '..');
+if (process.platform !== 'win32') throw new Error('Native audio requires Windows.');
+const compiler = join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+if (!existsSync(compiler)) throw new Error('找不到 Windows .NET Framework C# 编译器。');
+mkdirSync(join(root, 'native/bin'), { recursive: true });
+execFileSync(compiler, ['/nologo', '/optimize+', '/platform:x64', '/target:exe', `/out:${join(root, 'native/bin/YingBan.Audio.exe')}`, join(root, 'native/ProcessAudio.cs'), join(root, 'native/Ducking.cs'), join(root, 'native/CaptureScope.cs')], { stdio: 'inherit', windowsHide: true });
+console.log('Native process-loopback helper built.');

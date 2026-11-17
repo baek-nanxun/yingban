@@ -1,0 +1,44 @@
+name: Release YingBan
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build portable application
+        run: npm run dist
+      - name: Archive release
+        shell: pwsh
+        env:
+          YINGBAN_OUTPUT_DIR: ${{ github.workspace }}\release
+        run: python scripts/archive.py
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/YingBan-Windows-*.zip
+            release/YingBan-source-*.zip
+            release/checksums.json

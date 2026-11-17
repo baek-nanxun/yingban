@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; worker-src 'self'; connect-src 'self'">
+  <title>映伴</title><link rel="stylesheet" href="styles.css">
+</head>
+<body data-view="connect">
+  <header class="appbar">
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="5" width="20" height="17" rx="5"/><rect x="10" y="12" width="19" height="16" rx="5"/></svg><strong>映伴</strong><span>YingBan</span></div>
+    <div class="appbar-actions"><span class="top-state"><i id="connectionDot"></i><span id="connectionStatus">未连接</span></span><button class="icon-button" id="homeSettings" title="设置" aria-label="设置"><svg class="icon"><use href="icons.svg#settings"/></svg></button></div>
+  </header>
+  <main class="app-body">
+    <section id="setup" class="connect-view">
+      <div class="connect-heading"><h1>开始通话</h1><p>和另一台电脑一起看屏幕、聊声音。</p></div>
+      <div class="connection-actions">
+        <div class="create-area"><div class="action-symbol"><svg class="icon"><use href="icons.svg#plus"/></svg></div><h2>新建房间</h2><p>邀请对方，开始共享。</p><button class="button primary-button" id="createRoom">创建房间<svg class="icon"><use href="icons.svg#arrow-right"/></svg></button></div>
+        <form class="join-area" id="joinForm"><label for="roomInput">加入房间</label><p>输入对方的 6 位房间号。</p><input id="roomInput" class="room-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000 000" autocomplete="off" aria-label="房间号"><button class="button secondary-button" id="joinByRoom" type="submit">加入房间</button></form>
+      </div>
+      <div class="connect-options"><label class="checkbox-label"><input type="checkbox" id="startMic">进入房间时开启麦克风</label><span><svg class="icon"><use href="icons.svg#wifi"/></svg>局域网房间号直连</span></div>
+      <p class="connect-footnote">跨网络时，点击对方发送的映伴邀请链接加入。</p>
+    </section>
+    <section id="sessionView" class="session-view hidden">
+      <header id="inviteCard" class="session-header"><div class="room-identity"><span class="room-label">房间</span><strong id="roomNumber">------</strong><button class="icon-button small" id="copyRoom" title="复制房间号" aria-label="复制房间号"><svg class="icon"><use href="icons.svg#copy"/></svg></button><span class="session-divider"></span><span id="participantStatus">等待对方加入</span></div><button class="button text-button" id="copyInvite"><svg class="icon"><use href="icons.svg#link"/></svg>邀请</button><select id="inviteSelect" hidden aria-label="网络邀请地址"></select></header>
+      <section class="stage hidden" id="stage">
+        <div class="stage-top"><span id="stageTitle">共享画面</span><button class="icon-button small" id="fullscreen" title="全屏" aria-label="全屏"><svg class="icon"><use href="icons.svg#maximize-2"/></svg></button></div>
+        <video id="screenVideo" autoplay playsinline muted class="hidden"></video>
+        <div id="emptyStage" class="empty-stage"><svg class="empty-icon"><use href="icons.svg#monitor"/></svg><h2>等待共享画面</h2><p id="stageHint">点击下方屏幕按钮开始共享。</p></div>
+        <div class="stage-bottom"><span id="shareStatus">未共享</span><span id="quality"></span></div>
+      </section>
+      <div class="callbar hidden" id="callbar"><div class="call-controls" role="toolbar" aria-label="通话控制">
+        <button class="control-button" id="muteMic" disabled title="开启麦克风" aria-label="开启麦克风" aria-pressed="false"><svg class="icon"><use href="icons.svg#mic-off"/></svg></button>
+        <button class="control-button" id="shareScreen" disabled title="共享屏幕" aria-label="共享屏幕"><svg class="icon"><use href="icons.svg#monitor-up"/></svg></button>
+        <button class="control-button selected hidden" id="stopShare" title="停止共享" aria-label="停止共享"><svg class="icon"><use href="icons.svg#screen-share-off"/></svg></button>
+        <button class="control-button" id="settingsButton" title="设置" aria-label="设置"><svg class="icon"><use href="icons.svg#settings"/></svg></button><span class="control-divider"></span>
+        <button class="control-button hangup" id="leaveRoom" disabled title="结束通话" aria-label="结束通话"><svg class="icon"><use href="icons.svg#phone-off"/></svg></button>
+      </div></div>
+    </section>
+  </main>
+  <div class="notice hidden" id="notice" role="status" aria-live="polite"></div>
+  <dialog id="sourceDialog" class="source-dialog"><header class="dialog-heading"><h2>共享屏幕</h2><button class="icon-button" id="closeDialog" title="关闭" aria-label="关闭"><svg class="icon"><use href="icons.svg#x"/></svg></button></header><p class="dialog-subtitle">选择屏幕或应用窗口</p><div class="source-grid" id="sourceGrid"></div>
+    <div class="source-options"><label class="checkbox-label"><input id="includeAudio" type="checkbox" checked><span id="audioScopeLabel">共享所选内容的声音</span></label><label class="quality-select" for="videoQuality">画质<select id="videoQuality"><option value="4k" selected>4K · 清晰优先</option><option value="1440p">1440p · 均衡</option><option value="1080p">1080p · 节省带宽</option></select></label></div><p id="scopeHint" class="dialog-note">声音跟随所选应用或屏幕。</p><p id="qualityHint" class="sr-only"></p><footer class="dialog-footer"><button class="button primary-button" id="confirmShare" disabled>开始共享</button></footer>
+  </dialog>
+  <div id="runtimePreferences" hidden aria-hidden="true"><input id="inviteInput"><button id="joinRoom"></button><input id="duckEnabled" type="checkbox" checked><input id="duckDepth" type="range" min="6" max="24" value="15"><output id="duckDepthLabel"></output><span id="duckDescription"></span><input id="sharedVolume" type="range" min="0" max="100" value="80"><span id="sharedVolumeLabel"></span><select id="micDevice"><option value="">系统默认麦克风</option></select><span id="micHint"></span><span id="localVoice"></span><span id="remoteVoice"></span><span id="localMeter"></span><span id="remoteMeter"></span><input id="sensitivity" type="range" min="25" max="60" value="42"><span id="sensitivityLabel"></span><div id="duckState"><span id="duckLabel"></span></div></div>
+  <script src="audio-logic.js"></script><script src="renderer.js"></script>
+</body></html>
