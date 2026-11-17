@@ -238,7 +238,7 @@
   });
   async function begin(kind) {
     if (s.busy || s.inRoom) return;
-    if (kind === 'join' && !$('inviteInput').value.trim()) { notify('请先粘贴对方的邀请地址。', 'error'); return; }
+    if (kind === 'join' && !$('inviteInput').value.trim()) { notify('邀请链接无效。', 'error'); return; }
     s.busy = true; controls(); notify('正在建立通话…');
     try {
       s.inRoom = true; s.generation++;
@@ -440,6 +440,11 @@
     if (restart) void stopMicrophone().then(() => microphone()).catch(error => notify(error.message, 'error'));
   }
   api.onSettings(applyPreferences); api.onSettingsVisible(visible => { settingsVisible = visible; });
+  api.onProtocolInvite(value => {
+    if (typeof value !== 'string') return;
+    $('inviteInput').value = value;
+    if (!s.inRoom && !s.busy) void begin('join');
+  });
   void api.getSettings().then(applyPreferences);
   setInterval(() => { if (settingsVisible) void api.reportStatus({ mic: Boolean(micStream), connected: pc?.connectionState === 'connected', speaking: s.speaking, remoteSpeaking: Boolean(s.peer.speaking), remoteMuted: s.peer.muted, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharing: Boolean(localVideo), peerSharing: s.peer.sharing, peerDuckEnabled: s.peer.duckEnabled, peerDuckDepth: s.peer.duckDepth, ducking: localDucked || s.peer.sourceDucked }); }, 200);
   api.info().then(result => { info = result; }).catch(() => {}); void devices().catch(() => {}); controls();

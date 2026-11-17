@@ -18,6 +18,7 @@ function nativeHelperPath() {
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 let window, settingsWindow, room, socket, capture, selectedSource, captureTask, grantedSource;
+let pendingProtocolInvite;
 let windowMode = 'connect';
 let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', inputMode: 'standard' };
 let deviceList = [], runtimeStatus = {};
@@ -49,6 +50,17 @@ function openSettings() {
   settingsWindow.on('closed', () => { settingsWindow = undefined; ui('settings:visible', false); });
   ui('settings:visible', true);
 }
+function isInviteUrl(value) { return typeof value === 'string' && /^(?:yingban|clearcall):\/\//i.test(value); }
+function protocolArgument(argv) { return argv.find(value => isInviteUrl(value)); }
+function queueProtocolInvite(value) {
+  if (!isInviteUrl(value)) return;
+  pendingProtocolInvite = value;
+  if (window && !window.isDestroyed() && !window.webContents.isLoading()) ui('protocol:invite', value);
+}
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) app.quit();
+app.on('second-instance', (_event, argv) => queueProtocolInvite(protocolArgument(argv)));
+app.on('open-url', (event, value) => { event.preventDefault(); queueProtocolInvite(value); });
 let captureGeneration = 0;
 async function ensureFirewallRules() {
   if (process.env.CLEARCALL_TEST === '1') return { skipped: true };
@@ -119,6 +131,7 @@ function handle(name, fn) {
   });
 }
 app.whenReady().then(() => {
+  if (!singleInstanceLock) return;
   if (process.env.CLEARCALL_TEST !== '1') {
     try { const saved = JSON.parse(fs.readFileSync(join(app.getPath('userData'), 'preferences.json'), 'utf8')); for (const key of Object.keys(preferences)) if (typeof saved[key] === typeof preferences[key]) preferences[key] = saved[key]; } catch {}
   }
@@ -197,7 +210,7 @@ app.whenReady().then(() => {
     return sources;
   });
   handle('sources:select', async id => {
-    if (typeof id !== 'string' || !/^(screen|window):/.test(id)) throw new Error('无效的共享窗口。');
+    if (typeof id !== 'string' || !/^(?:screen|window):|^window-hwnd:/.test(id)) throw new Error('无效的共享窗口。');
     if (id.startsWith('window-hwnd:')) {
       const handle = id.slice('window-hwnd:'.length);
       await runFile(nativeHelperPath(), ['--restore-window', handle], { windowsHide: true, timeout: 5000 });
@@ -268,7 +281,7 @@ app.whenReady().then(() => {
     if (typeof gain !== 'number' || !Number.isFinite(gain) || gain < 0.05 || gain > 1) throw new Error('Invalid volume');
     if (capture && capture.stdin.writable) capture.stdin.write(`DUCK ${gain.toFixed(5)}\n`);
   });
-  handle('clipboard:copy', text => { if (typeof text === 'string' && text.startsWith('clearcall://') && text.length < 300) clipboard.writeText(text); });
+  handle('clipboard:copy', text => { if (typeof text === 'string' && /^(?:yingban|clearcall):\/\//.test(text) && text.length < 300) clipboard.writeText(text); });
   handle('updates:check', async () => {
     const repo = process.env.YINGBAN_GITHUB_REPO || 'baek-nanxun/yingban-windows';
     if (!/^[^/]+\/yingban-windows$/.test(repo)) return { available: false, configured: false, message: 'GitHub 更新地址尚未配置。' };
@@ -279,11 +292,20 @@ app.whenReady().then(() => {
   });
   handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/releases\//.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
   handle('app:info', () => ({ version: app.getVersion(), windows: release(), nativeAudio: Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
+  if (process.platform === 'win32') {
+    if (process.defaultApp && process.argv.length >= 2) app.setAsDefaultProtocolClient('yingban', process.execPath, [process.argv[1]]);
+    else app.setAsDefaultProtocolClient('yingban');
+  }
   window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => { void leave(); });
   window.loadFile(join(__dirname, 'index.html'));
+  window.webContents.once('did-finish-load', () => {
+    const invite = pendingProtocolInvite || protocolArgument(process.argv);
+    pendingProtocolInvite = undefined;
+    if (invite) ui('protocol:invite', invite);
+  });
   window.on('closed', () => { window = undefined; void leave(); });
 });
 app.on('window-all-closed', () => app.quit());
