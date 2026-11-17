@@ -8,6 +8,12 @@ const { release } = require('node:os');
 const { WebSocket } = require('ws');
 const { createRoom, parseInvite, discoverRoom } = require('./room.cjs');
 
+function nativeHelperPath() {
+  const bundled = join(__dirname, '../native/bin/YingBan.Audio.exe');
+  const external = join(process.resourcesPath || '', 'native/bin/YingBan.Audio.exe');
+  return app.isPackaged && fs.existsSync(external) ? external : bundled;
+}
+
 // Invitees need routable adapter candidates, including a Tailscale adapter.
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -180,7 +186,7 @@ app.whenReady().then(() => {
   handle('sources:list', async () => {
     const sources = (await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: true })).filter(x => !x.name.startsWith('映伴')).map(x => ({ id: x.id, name: x.name, kind: x.id.startsWith('window:') ? 'app' : 'screen', thumbnail: x.thumbnail.toDataURL() }));
     try {
-      const { stdout } = await runFile(join(__dirname, '../native/bin/YingBan.Audio.exe'), ['--list-windows', String(process.pid)], { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 });
+      const { stdout } = await runFile(nativeHelperPath(), ['--list-windows', String(process.pid)], { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 });
       const visibleNames = new Set(sources.filter(source => source.kind === 'app').map(source => source.name));
       for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
         const [handle, minimized, ...titleParts] = line.split('|'); const name = titleParts.join('|').trim();
@@ -194,17 +200,17 @@ app.whenReady().then(() => {
     if (typeof id !== 'string' || !/^(screen|window):/.test(id)) throw new Error('无效的共享窗口。');
     if (id.startsWith('window-hwnd:')) {
       const handle = id.slice('window-hwnd:'.length);
-      await runFile(join(__dirname, '../native/bin/YingBan.Audio.exe'), ['--restore-window', handle], { windowsHide: true, timeout: 5000 });
+      await runFile(nativeHelperPath(), ['--restore-window', handle], { windowsHide: true, timeout: 5000 });
       await new Promise(resolve => setTimeout(resolve, 250));
       const refreshed = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: true });
       let title = '';
-      try { const listing = await runFile(join(__dirname, '../native/bin/YingBan.Audio.exe'), ['--list-windows', String(process.pid)], { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 }); title = listing.stdout.split(/\r?\n/).map(line => line.split('|')).find(parts => parts[0] === handle)?.slice(2).join('|').trim() || ''; } catch {}
+      try { const listing = await runFile(nativeHelperPath(), ['--list-windows', String(process.pid)], { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 }); title = listing.stdout.split(/\r?\n/).map(line => line.split('|')).find(parts => parts[0] === handle)?.slice(2).join('|').trim() || ''; } catch {}
       const match = refreshed.find(source => source.name && source.name === title);
       if (!match) throw new Error('恢复窗口后仍无法获得可共享画面，请确认应用没有被系统隐藏。');
       selectedSource = match.id;
     } else if (id.startsWith('window:')) {
       const match = /^window:(\d+):\d+$/.exec(id);
-      if (match) await runFile(join(__dirname, '../native/bin/YingBan.Audio.exe'), ['--restore-window', match[1]], { windowsHide: true, timeout: 5000 });
+      if (match) await runFile(nativeHelperPath(), ['--restore-window', match[1]], { windowsHide: true, timeout: 5000 });
     }
     if (!selectedSource) selectedSource = id;
     grantedSource = undefined;
@@ -215,7 +221,7 @@ app.whenReady().then(() => {
     if (!source) throw new Error('请先选择并开始共享屏幕或应用。');
     const build = Number(release().split('.')[2]);
     if (build < 20348) throw new Error('安全采集电脑声音需要 Windows 11。当前系统可仅共享画面。');
-    const helper = join(__dirname, '../native/bin/YingBan.Audio.exe');
+    const helper = nativeHelperPath();
     const generation = captureGeneration;
     captureTask = (async () => {
     let targetPid = 0;

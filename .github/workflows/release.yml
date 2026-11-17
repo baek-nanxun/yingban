@@ -28,6 +28,8 @@ jobs:
         run: npm test
       - name: Build portable application
         run: npm run dist
+      - name: Build Windows installer
+        run: npm run dist:installer
       - name: Archive release
         shell: pwsh
         env:
@@ -42,3 +44,4 @@ jobs:
             release/YingBan-Windows-*.zip
             release/YingBan-source-*.zip
             release/checksums.json
+            dist/YingBan-Setup-*.exe
