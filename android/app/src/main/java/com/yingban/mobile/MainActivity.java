@@ -14,6 +14,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.projection.MediaProjectionManager;
@@ -27,6 +28,7 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -112,8 +114,21 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     }
     private void setRoot(boolean scrollable) {
         root = column(); root.setPadding(dp(22), dp(16), dp(22), dp(18)); root.setBackgroundColor(BACKGROUND);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left, top, right, bottom;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets safe = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                left = safe.left; top = safe.top; right = safe.right; bottom = safe.bottom;
+            } else {
+                left = insets.getSystemWindowInsetLeft(); top = insets.getSystemWindowInsetTop();
+                right = insets.getSystemWindowInsetRight(); bottom = insets.getSystemWindowInsetBottom();
+            }
+            view.setPadding(dp(22) + left, dp(16) + top, dp(22) + right, dp(18) + bottom);
+            return insets;
+        });
         if (scrollable) { ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.addView(root); setContentView(scroll); }
         else setContentView(root);
+        root.requestApplyInsets();
     }
     private void home() {
         detachVideo(); setRoot(true); addHeader(root, "映伴", this::profileDialog); gap(root, 28);
