@@ -80,6 +80,12 @@ async function fullscreen(client) {
     await settings.locator('[data-tab="sharing"]').click();
     await settings.waitForSelector('#duckEnabled', { state: 'visible' });
     await settings.screenshot({ path: join(out, 'ui-settings-sharing.png'), scale: 'css' });
+    await settings.locator('[data-tab="about"]').click();
+    await settings.locator('#checkUpdate').click();
+    await settings.waitForFunction(() => /已是最新版本|发现新版本|暂未发布新版本/.test(document.getElementById('updateStatus').textContent), null, { timeout: 20000 });
+    assert.match(await settings.locator('#updateStatus').innerText(), /已是最新版本|发现新版本|暂未发布新版本/);
+    console.log('PASS: update check works through GitHub release-page fallback.');
+    await settings.locator('[data-tab="sharing"]').click();
     await settings.locator('#duckDepth').fill('18');
     await a.page.waitForFunction(() => document.getElementById('duckDepth').value === '18');
     await settings.locator('#duckDepth').fill('15');

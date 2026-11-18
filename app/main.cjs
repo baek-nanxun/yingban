@@ -42,7 +42,7 @@ function setWindowMode(mode) {
 function openSettings() {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.show(); settingsWindow.focus(); return; }
   const available = screen.getDisplayMatching(window.getBounds()).workArea;
-  settingsWindow = new BrowserWindow({ parent: window, width: Math.min(760, available.width), height: Math.min(640, available.height), minWidth: 660, minHeight: 540, title: '映伴设置', backgroundColor: '#f6f1eb', autoHideMenuBar: true, show: false, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  settingsWindow = new BrowserWindow({ parent: window, width: Math.min(760, available.width), height: Math.min(640, available.height), minWidth: 660, minHeight: 540, title: '映伴设置', icon: join(__dirname, 'icon.ico'), backgroundColor: '#f6f1eb', autoHideMenuBar: true, show: false, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
   settingsWindow.loadFile(join(__dirname, 'settings.html'));
@@ -285,10 +285,23 @@ app.whenReady().then(() => {
   handle('updates:check', async () => {
     const repo = process.env.YINGBAN_GITHUB_REPO || 'baek-nanxun/yingban-windows';
     if (!/^[^/]+\/yingban-windows$/.test(repo)) return { available: false, configured: false, message: 'GitHub 更新地址尚未配置。' };
-    const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'YingBan' } });
-    if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
-    const latest = await response.json();
-    return { available: latest.tag_name !== `v${app.getVersion()}`, configured: true, tag: latest.tag_name, url: latest.html_url, assets: (latest.assets || []).map(asset => ({ name: asset.name, url: asset.browser_download_url })) };
+    const current = `v${app.getVersion()}`;
+    const headers = { accept: 'application/vnd.github+json', 'user-agent': 'YingBan' };
+    try {
+      const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
+      if (response.ok) {
+        const latest = await response.json();
+        return { available: latest.tag_name !== current, configured: true, tag: latest.tag_name, url: latest.html_url, assets: (latest.assets || []).map(asset => ({ name: asset.name, url: asset.browser_download_url })) };
+      }
+    } catch {}
+    // The public API is rate-limited on shared networks. The release page is
+    // still available and redirects to the current tag without an API token.
+    const page = await fetch(`https://github.com/${repo}/releases/latest`, { headers: { 'user-agent': 'YingBan' }, redirect: 'follow' });
+    if (!page.ok) throw new Error(`GitHub 返回 HTTP ${page.status}`);
+    const match = page.url.match(/\/releases\/tag\/([^/?#]+)/);
+    if (!match) return { available: false, configured: true, tag: current, url: `https://github.com/${repo}/releases` };
+    const tag = decodeURIComponent(match[1]);
+    return { available: tag !== current, configured: true, tag, url: page.url, assets: [] };
   });
   handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/releases\//.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
   handle('app:info', () => ({ version: app.getVersion(), windows: release(), nativeAudio: Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
@@ -296,7 +309,7 @@ app.whenReady().then(() => {
     if (process.defaultApp && process.argv.length >= 2) app.setAsDefaultProtocolClient('yingban', process.execPath, [process.argv[1]]);
     else app.setAsDefaultProtocolClient('yingban');
   }
-  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: join(__dirname, 'icon.ico'), autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => { void leave(); });

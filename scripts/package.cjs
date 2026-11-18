@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const root = path.join(__dirname, '..');
 const electron = path.dirname(require('electron'));
 const out = path.join(root, 'dist', 'YingBan-Windows');
@@ -8,6 +9,8 @@ fs.cpSync(electron, out, { recursive: true });
 const executable = path.join(out, 'YingBan.exe');
 if (fs.existsSync(executable)) fs.unlinkSync(executable);
 fs.renameSync(path.join(out, 'electron.exe'), executable);
+const rcedit = path.join(root, 'node_modules', 'rcedit', 'bin', process.arch === 'ia32' ? 'rcedit.exe' : 'rcedit-x64.exe');
+if (fs.existsSync(rcedit)) execFileSync(rcedit, [executable, '--set-icon', path.join(root, 'app', 'icon.ico')], { windowsHide: true });
 const appRoot = path.join(out, 'resources', 'app');
 fs.mkdirSync(path.join(appRoot, 'native', 'bin'), { recursive: true });
 fs.cpSync(path.join(root, 'app'), path.join(appRoot, 'app'), { recursive: true });
