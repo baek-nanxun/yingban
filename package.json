@@ -1,6 +1,6 @@
 {
   "name": "yingban-windows",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "映伴 · Windows 双人屏幕共享与人声优先原型",
   "repository": {
@@ -31,6 +31,15 @@
     "productName": "映伴",
     "executableName": "YingBan",
     "icon": "app/icon.ico",
+    "protocols": [
+      {
+        "name": "映伴邀请",
+        "schemes": [
+          "yingban",
+          "clearcall"
+        ]
+      }
+    ],
     "asar": true,
     "files": [
       "app/**/*",

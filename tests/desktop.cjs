@@ -53,6 +53,10 @@ async function fullscreen(client) {
     assert(await a.page.evaluate(() => document.documentElement.scrollHeight <= innerHeight && document.documentElement.scrollWidth <= innerWidth));
     await a.page.locator('#createRoom').click();
     await a.page.waitForFunction(() => window.clearcallDiagnostics().inRoom && document.getElementById('inviteSelect').options.length);
+    await a.page.locator('#copyInvite').click();
+    const copiedInvite = await a.app.evaluate(({ clipboard }) => clipboard.readText());
+    assert.match(copiedInvite, /https:\/\/baek-nanxun\.github\.io\/yingban-windows\/join\/\?target=/);
+    assert.match(copiedInvite, /房间号：\d{6}/);
     assert.equal(await a.page.evaluate(() => window.testMicCalls), 0);
     assert.equal((await a.page.evaluate(() => window.clearcallDiagnostics())).context, undefined);
     console.log('PASS: creating a room never opens microphone or audio output by default.');

@@ -3,13 +3,13 @@
   const api = window.clearcall;
   const $ = id => document.getElementById(id);
   const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 15, peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
-  let ctx, master, silence, outputGain, micStream, micMonitor, pc, tx, localVideo, remoteVideo;
+  let ctx, master, sharedMaster, silence, outputGain, micStream, micMonitor, pc, tx, localVideo, remoteVideo;
   let outgoingSystem, pcmNode, pcmDestination, remoteMic, remoteSystem;
   let moduleReady, selectedSource, lastTarget = -1, info = {};
   let lastLocalTarget = 1;
   let localDucked = false;
   let audioScope, micGeneration = 0;
-  let roomId = '', inputMode = 'standard', toastTimer, audioInitialization, settingsVisible = false;
+  let roomId = '', inputMode = 'standard', outputDevice = '', toastTimer, audioInitialization, settingsVisible = false;
   const setText = (id, text) => { if ($(id).textContent !== text) $(id).textContent = text; };
   const videoProfiles = {
     '4k': { label: '4K', width: 3840, height: 2160, fps: 30, bitrate: 25000000 },
@@ -35,12 +35,14 @@
     if (!audioInitialization) audioInitialization = (async () => {
       info = await api.info();
       ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'balanced' });
+      if (outputDevice && typeof ctx.setSinkId === 'function') await ctx.setSinkId(outputDevice).catch(() => {});
       if (ctx.sampleRate !== 48000) throw new Error('当前音频设备不支持 48kHz 音频。');
       master = ctx.createDynamicsCompressor();
       master.threshold.value = -3; master.knee.value = 3; master.ratio.value = 12;
       master.attack.value = 0.003; master.release.value = 0.15;
+      sharedMaster = ctx.createGain();
       outputGain = ctx.createGain(); outputGain.gain.value = info.testMode ? 0 : 1;
-      master.connect(outputGain); outputGain.connect(ctx.destination);
+      master.connect(outputGain); sharedMaster.connect(outputGain); outputGain.connect(ctx.destination);
       silence = ctx.createGain(); silence.gain.value = 0; silence.connect(ctx.destination);
       moduleReady = undefined;
     })();
@@ -59,7 +61,7 @@
       // active; WebAudio supplies the only audible output and its ducking gain.
       playout = new Audio(); playout.autoplay = true; playout.volume = 0; playout.srcObject = stream;
       void playout.play().catch(() => {});
-      source.connect(gain); gain.gain.value = shared ? Number($('sharedVolume').value) / 100 : 1; gain.connect(master);
+      source.connect(gain); gain.gain.value = shared ? Number($('sharedVolume').value) / 100 : 1; gain.connect(shared ? sharedMaster : master);
     }
     return { source, gain, analyser, high, low, data: new Float32Array(analyser.fftSize), dispose() { if (playout) { playout.pause(); playout.srcObject = null; } source.disconnect(); gain.disconnect(); high.disconnect(); low.disconnect(); analyser.disconnect(); } };
   }
@@ -71,9 +73,13 @@
     micDeviceHint();
     await api.reportDevices(list.map(d => ({ kind: d.kind, label: d.label, deviceId: d.deviceId })));
   }
+  async function setOutputDevice(deviceId) {
+    outputDevice = deviceId || '';
+    if (ctx && typeof ctx.setSinkId === 'function') await ctx.setSinkId(outputDevice || 'default').catch(() => {});
+  }
   function micDeviceHint() {
     const label = $('micDevice').selectedOptions[0]?.textContent || '';
-    setText('micHint', /bluetooth|蓝牙|FreeClip|FreeBuds|AirPods/i.test(label) ? '蓝牙麦克风开启后可能切换通话模式。若鼠标或声音卡顿，请关闭麦克风，改用 USB / 有线麦克风。' : '创建通话默认不开麦。点击“开启麦克风”后才访问设备；关闭麦克风会释放设备。');
+    setText('micHint', /bluetooth|蓝牙|FreeClip|FreeBuds|AirPods/i.test(label) ? '蓝牙麦克风会让耳机进入通话模式，音乐可能变差；建议使用电脑内置或 USB 麦克风。' : '');
   }
   async function microphone() {
     if (s.micBusy) return;
@@ -148,12 +154,35 @@
     remoteMic?.dispose(); remoteSystem?.dispose(); remoteMic = remoteSystem = remoteVideo = undefined;
     s.peer = { sharing: false, muted: false }; remoteGate.reset(); lastTarget = -1; refreshVideo();
   }
+  function preferOpus(transceiver) {
+    if (!transceiver?.setCodecPreferences || !window.RTCRtpReceiver?.getCapabilities) return;
+    const codecs = window.RTCRtpReceiver.getCapabilities('audio')?.codecs?.filter(codec => codec.mimeType?.toLowerCase() === 'audio/opus');
+    if (codecs?.length) transceiver.setCodecPreferences(codecs);
+  }
+  async function tuneAudioSender(sender, maxBitrate) {
+    if (!sender?.getParameters || !sender?.setParameters) return;
+    const parameters = sender.getParameters();
+    if (!parameters.encodings?.length) return;
+    for (const encoding of parameters.encodings) {
+      encoding.maxBitrate = maxBitrate;
+      encoding.dtx = false;
+    }
+    try { await sender.setParameters(parameters); } catch {}
+  }
+  async function configureAudio() {
+    if (!tx) return;
+    await tuneAudioSender(tx.mic?.sender, 96000);
+    await tuneAudioSender(tx.system?.sender, 256000);
+  }
   async function buildPeer(initiator) {
     closePeer();
     const current = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' }); pc = current;
     // Only the offerer creates slots. The answerer uses the offered transceivers;
     // pre-creating answerer slots creates extra m-lines and breaks two-way audio.
-    if (initiator) tx = { mic: current.addTransceiver('audio', { direction: 'sendrecv' }), system: current.addTransceiver('audio', { direction: 'sendrecv' }), video: current.addTransceiver('video', { direction: 'sendrecv' }) };
+    if (initiator) {
+      tx = { mic: current.addTransceiver('audio', { direction: 'sendrecv' }), system: current.addTransceiver('audio', { direction: 'sendrecv' }), video: current.addTransceiver('video', { direction: 'sendrecv' }) };
+      preferOpus(tx.mic); preferOpus(tx.system);
+    }
     current.onicecandidate = event => { if (event.candidate) void signal({ type: 'candidate', candidate: event.candidate.toJSON() }); };
     current.ontrack = event => {
       const stream = new MediaStream([event.track]);
@@ -168,7 +197,7 @@
     };
     current.onconnectionstatechange = () => {
       if (current !== pc) return;
-      if (current.connectionState === 'connected') { connection('通话已连接', true); void configureVideo().catch(error => notify(error.message, 'error')); notify('双方可以说话。共享电脑声音时，不会把对方的声音重新传回去。', 'success'); }
+      if (current.connectionState === 'connected') { connection('通话已连接', true); void configureAudio(); void configureVideo().catch(error => notify(error.message, 'error')); notify('双方可以说话。共享电脑声音时，不会把对方的声音重新传回去。', 'success'); }
       else if (current.connectionState === 'failed') { connection('媒体连接失败'); notify('音视频无法直连。请确认两台电脑在同一局域网或同一 Tailscale 网络，并允许映伴通过防火墙，然后重新加入。', 'error'); }
       else if (current.connectionState === 'disconnected') connection('网络中断，正在尝试恢复');
     };
@@ -180,6 +209,7 @@
     await tx.mic.sender.replaceTrack(micStream?.getAudioTracks()[0] || null);
     await tx.system.sender.replaceTrack(outgoingSystem?.getAudioTracks()[0] || null);
     await tx.video.sender.replaceTrack(localVideo?.getVideoTracks()[0] || null);
+    await configureAudio();
     await configureVideo();
   }
   async function configureVideo() {
@@ -223,6 +253,7 @@
         for (const candidate of s.candidates.splice(0)) await pc.addIceCandidate(candidate);
         if (message.description.type === 'offer') {
           const slots = pc.getTransceivers(); tx = { mic: slots[0], system: slots[1], video: slots[2] };
+          preferOpus(tx.mic); preferOpus(tx.system);
           for (const slot of slots) slot.direction = 'sendrecv';
           await attachTracks();
           await pc.setLocalDescription(await pc.createAnswer()); await signal({ type: 'description', description: pc.localDescription.toJSON() });
@@ -413,6 +444,7 @@
     micDeviceHint();
     if (micStream) void stopMicrophone().then(() => microphone()).catch(error => notify(error.message, 'error'));
   });
+  $('outputDevice').addEventListener('change', () => { void setOutputDevice($('outputDevice').value); });
   $('shareScreen').addEventListener('click', () => { void openSources(); });
   $('stopShare').addEventListener('click', () => { void stopSharing(); });
   $('closeDialog').addEventListener('click', () => $('sourceDialog').close());
@@ -423,7 +455,13 @@
     const profile = videoProfiles[$('videoQuality').value];
     $('qualityHint').textContent = `${profile.width}×${profile.height} 上限 · 最高 ${profile.fps} 帧/秒 · 码率上限 ${profile.bitrate / 1000000} Mbps。实际清晰度取决于共享源、网络与设备，静态内容用量更低。`;
   });
-  $('copyInvite').addEventListener('click', async () => { if ($('inviteSelect').value) { await api.copy($('inviteSelect').value); notify('邀请链接已复制', 'success'); } });
+  $('copyInvite').addEventListener('click', async () => {
+    if (!$('inviteSelect').value) return;
+    const target = $('inviteSelect').value;
+    const link = `https://baek-nanxun.github.io/yingban-windows/join/?target=${encodeURIComponent(target)}`;
+    await api.copy(`加入映伴通话\n点击链接：${link}\n房间号：${roomId}\n两台电脑需在同一局域网或同一 Tailscale 网络。`);
+    notify('邀请信息已复制，包含链接和房间号', 'success');
+  });
   $('copyRoom').addEventListener('click', async () => { if (roomId) { await api.copy(roomId); notify('房间号已复制', 'success'); } });
   $('duckDepth').addEventListener('input', () => { s.duckDepth = Number($('duckDepth').value); $('duckDepthLabel').textContent = `${s.duckDepth} dB`; void peerState(); });
   $('duckEnabled').addEventListener('change', () => { s.duckEnabled = $('duckEnabled').checked; void peerState(); });
@@ -434,6 +472,7 @@
   function applyPreferences({ preferences: p }) {
     const restart = micStream && (inputMode !== p.inputMode || $('micDevice').value !== p.micDevice);
     s.duckEnabled = p.duckEnabled; s.duckDepth = p.duckDepth; inputMode = p.inputMode;
+    if (outputDevice !== p.outputDevice) void setOutputDevice(p.outputDevice);
     $('sharedVolume').value = p.sharedVolume; $('sensitivity').value = p.sensitivity;
     if (Array.from($('micDevice').options).some(o => o.value === p.micDevice)) $('micDevice').value = p.micDevice;
     controls(); void peerState();
@@ -449,6 +488,6 @@
   setInterval(() => { if (settingsVisible) void api.reportStatus({ mic: Boolean(micStream), connected: pc?.connectionState === 'connected', speaking: s.speaking, remoteSpeaking: Boolean(s.peer.speaking), remoteMuted: s.peer.muted, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharing: Boolean(localVideo), peerSharing: s.peer.sharing, peerDuckEnabled: s.peer.duckEnabled, peerDuckDepth: s.peer.duckDepth, ducking: localDucked || s.peer.sourceDucked }); }, 200);
   api.info().then(result => { info = result; }).catch(() => {}); void devices().catch(() => {}); controls();
   navigator.mediaDevices.addEventListener('devicechange', () => { void devices().catch(() => {}); });
-  window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, encoder: tx?.video.sender.getParameters() });
+  window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, encoder: tx?.video.sender.getParameters(), audioEncodings: { mic: tx?.mic?.sender.getParameters().encodings, system: tx?.system?.sender.getParameters().encodings } });
   window.clearcallMediaStats = async () => pc ? Array.from((await pc.getStats()).values()).filter(r => ['inbound-rtp', 'outbound-rtp', 'media-source'].includes(r.type)).map(r => ({ type: r.type, kind: r.kind, mid: r.mid, audioLevel: r.audioLevel, totalAudioEnergy: r.totalAudioEnergy, packetsReceived: r.packetsReceived, packetsSent: r.packetsSent, bytesSent: r.bytesSent })) : [];
 })();

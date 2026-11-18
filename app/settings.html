@@ -4,6 +4,7 @@
   <main class="settings-content">
     <section data-panel="audio"><h2>声音</h2><p class="settings-subtitle">选择输入设备，调整通话和共享声音。</p>
       <div class="settings-field"><label for="micDevice">麦克风</label><select id="micDevice"><option value="">系统默认</option></select><p class="settings-help" id="deviceHint"></p></div>
+      <div class="settings-field"><label for="outputDevice">播放设备</label><select id="outputDevice"><option value="">系统默认</option></select><p class="settings-help">蓝牙耳机想保持高音质播放时，建议把麦克风改为电脑内置或 USB 麦克风，避免耳机进入通话模式。</p></div>
       <div class="settings-field"><label for="inputMode">麦克风处理</label><select id="inputMode"><option value="standard">自动 · 回声消除、降噪与音量调整</option><option value="compatibility">兼容 · 保留回声消除，关闭降噪与自动增益</option></select><p class="settings-help">出现设备卡顿时可尝试兼容模式，或切换有线 / USB 麦克风。</p></div>
       <div class="meter-line"><span>我</span><div class="meter"><div id="localMeter"></div></div><span id="localVoice">未开启</span></div><div class="meter-line"><span>对方</span><div class="meter"><div id="remoteMeter"></div></div><span id="remoteVoice">未连接</span></div>
       <section class="settings-section"><h3>共享声音</h3><div class="settings-row"><label for="sharedVolume">收听音量</label><output id="volumeLabel">80%</output></div><input id="sharedVolume" type="range" min="0" max="100" value="80"><p class="settings-help">只调整自己听到的共享声音。</p></section>

@@ -20,7 +20,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 let window, settingsWindow, room, socket, capture, selectedSource, captureTask, grantedSource;
 let pendingProtocolInvite;
 let windowMode = 'connect';
-let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', inputMode: 'standard' };
+let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', outputDevice: '', inputMode: 'standard' };
 let deviceList = [], runtimeStatus = {};
 function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion() }; }
 function sendSettings() {
@@ -51,6 +51,16 @@ function openSettings() {
   ui('settings:visible', true);
 }
 function isInviteUrl(value) { return typeof value === 'string' && /^(?:yingban|clearcall):\/\//i.test(value); }
+function isWebInviteUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.origin === 'https://baek-nanxun.github.io' && url.pathname === '/yingban-windows/join/' && isInviteUrl(decodeURIComponent(url.searchParams.get('target') || ''));
+  } catch { return false; }
+}
+function isInviteClipboardText(value) {
+  const match = String(value).match(/https:\/\/baek-nanxun\.github\.io\/yingban-windows\/join\/\?target=[^\s]+/);
+  return Boolean(match && isWebInviteUrl(match[0]));
+}
 function protocolArgument(argv) { return argv.find(value => isInviteUrl(value)); }
 function queueProtocolInvite(value) {
   if (!isInviteUrl(value)) return;
@@ -146,6 +156,7 @@ app.whenReady().then(() => {
       if (key === 'sharedVolume' && Number.isFinite(value)) preferences[key] = Math.max(0, Math.min(100, value));
       if (key === 'sensitivity' && Number.isFinite(value)) preferences[key] = Math.max(25, Math.min(60, value));
       if (key === 'micDevice' && typeof value === 'string' && value.length < 1024) preferences[key] = value;
+      if (key === 'outputDevice' && typeof value === 'string' && value.length < 1024) preferences[key] = value;
       if (key === 'inputMode' && ['standard', 'compatibility'].includes(value)) preferences[key] = value;
     }
     if (process.env.CLEARCALL_TEST !== '1') fs.writeFileSync(join(app.getPath('userData'), 'preferences.json'), JSON.stringify(preferences));
@@ -281,7 +292,7 @@ app.whenReady().then(() => {
     if (typeof gain !== 'number' || !Number.isFinite(gain) || gain < 0.05 || gain > 1) throw new Error('Invalid volume');
     if (capture && capture.stdin.writable) capture.stdin.write(`DUCK ${gain.toFixed(5)}\n`);
   });
-  handle('clipboard:copy', text => { if (typeof text === 'string' && /^(?:yingban|clearcall):\/\//.test(text) && text.length < 300) clipboard.writeText(text); });
+  handle('clipboard:copy', text => { if (typeof text === 'string' && text.length < 1200 && ((/^(?:yingban|clearcall):\/\//.test(text) && text.length < 300) || isWebInviteUrl(text) || isInviteClipboardText(text))) clipboard.writeText(text); });
   handle('updates:check', async () => {
     const repo = process.env.YINGBAN_GITHUB_REPO || 'baek-nanxun/yingban-windows';
     if (!/^[^/]+\/yingban-windows$/.test(repo)) return { available: false, configured: false, message: 'GitHub 更新地址尚未配置。' };
@@ -306,8 +317,10 @@ app.whenReady().then(() => {
   handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/releases\//.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
   handle('app:info', () => ({ version: app.getVersion(), windows: release(), nativeAudio: Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
   if (process.platform === 'win32') {
-    if (process.defaultApp && process.argv.length >= 2) app.setAsDefaultProtocolClient('yingban', process.execPath, [process.argv[1]]);
-    else app.setAsDefaultProtocolClient('yingban');
+    for (const scheme of ['yingban', 'clearcall']) {
+      if (process.defaultApp && process.argv.length >= 2) app.setAsDefaultProtocolClient(scheme, process.execPath, [process.argv[1]]);
+      else app.setAsDefaultProtocolClient(scheme);
+    }
   }
   window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: join(__dirname, 'icon.ico'), autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

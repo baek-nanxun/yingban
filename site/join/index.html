@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f4d9cb"><title>加入映伴</title>
+  <style>
+    :root{font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;color:#332c27;background:#f6f1eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.card{width:min(460px,100%);padding:34px 30px 30px;background:#fffaf5;border:1px solid #e5dbd2;border-radius:22px;box-shadow:0 18px 60px #6d4e3218;text-align:center}.mark{width:72px;height:72px;border-radius:16px;margin:0 auto 20px;display:block}.eyebrow{margin:0 0 8px;color:#a8755c;font-size:13px}.title{margin:0;font-size:28px;letter-spacing:1px}.subtitle{margin:12px 0 25px;color:#8a7a6f;line-height:1.8;font-size:14px}.button{display:flex;align-items:center;justify-content:center;width:100%;min-height:48px;border:0;border-radius:10px;background:#bd5a3b;color:#fff9f2;text-decoration:none;font-size:16px;font-weight:650;cursor:pointer}.button:hover{background:#a94e32}.copy{margin-top:12px;background:#f4e1d6;color:#8a4a34}.hint{margin:22px 0 0;color:#a08e7e;font-size:12px;line-height:1.8}.error{color:#a34237}.details{margin-top:18px;color:#a08e7e;font-size:11px;word-break:break-all}.hidden{display:none}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <img class="mark" src="../brand.svg" alt="映伴">
+    <p class="eyebrow">YingBan</p><h1 class="title">加入映伴通话</h1>
+    <p class="subtitle" id="subtitle">点击下面的按钮打开映伴并自动加入。两台电脑需要在同一局域网或同一 Tailscale 网络中。</p>
+    <a id="open" class="button" href="#">打开映伴</a>
+    <button id="copy" class="button copy" type="button">复制映伴链接</button>
+    <p id="hint" class="hint">如果微信没有直接打开，请点击右上角菜单，选择“在浏览器中打开”，再点击“打开映伴”。</p>
+    <p id="details" class="details hidden"></p>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search), target = params.get('target') || '', open = document.getElementById('open'), copy = document.getElementById('copy'), hint = document.getElementById('hint'), details = document.getElementById('details');
+    const valid = /^(?:yingban|clearcall):\/\/[a-z0-9.-]+:\d{1,5}\/[a-f0-9]{48}$/i.test(target);
+    if (valid) {
+      open.href = target; details.textContent = target; details.classList.remove('hidden');
+      copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(location.href); copy.textContent = '已复制 HTTPS 邀请链接'; } catch { copy.textContent = '请长按地址栏复制链接'; } });
+    } else {
+      open.removeAttribute('href'); open.classList.add('hidden'); copy.classList.add('hidden'); hint.className = 'hint error'; hint.textContent = '邀请链接无效或已损坏，请让对方重新创建通话。';
+    }
+  </script>
+</body>
+</html>

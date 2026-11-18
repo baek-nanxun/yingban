@@ -23,9 +23,12 @@
     $('micDevice').replaceChildren(new Option('系统默认', ''));
     for (const d of (value.devices || []).filter(d => d.kind === 'audioinput' && !['default', 'communications'].includes(d.deviceId))) $('micDevice').add(new Option(d.label || '麦克风', d.deviceId));
     if (Array.from($('micDevice').options).some(o => o.value === selection)) $('micDevice').value = selection;
+    $('outputDevice').replaceChildren(new Option('系统默认', ''));
+    for (const d of (value.devices || []).filter(d => d.kind === 'audiooutput' && !['default', 'communications'].includes(d.deviceId))) $('outputDevice').add(new Option(d.label || '播放设备', d.deviceId));
+    if (Array.from($('outputDevice').options).some(o => o.value === p.outputDevice)) $('outputDevice').value = p.outputDevice;
     const actualDefault = value.devices?.find(d => d.kind === 'audioinput' && d.deviceId === 'default');
     const selectedLabel = selection ? $('micDevice').selectedOptions[0]?.text : actualDefault?.label || '';
-    $('deviceHint').textContent = /bluetooth|蓝牙|FreeClip|FreeBuds|AirPods/i.test(selectedLabel) ? '当前为蓝牙输入设备，开启后可能切换耳机通话模式。' : value.devices?.some(d => d.kind === 'audioinput') ? '' : '未检测到输入设备';
+    $('deviceHint').textContent = /bluetooth|蓝牙|FreeClip|FreeBuds|AirPods/i.test(selectedLabel) ? '蓝牙麦克风会让耳机进入通话模式，音乐可能变差；建议改用电脑内置或 USB 麦克风。' : value.devices?.some(d => d.kind === 'audioinput') ? '' : '未检测到输入设备';
     $('inputMode').value = p.inputMode;
     $('sharedVolume').value = p.sharedVolume; $('sensitivity').value = p.sensitivity;
     $('duckEnabled').checked = p.duckEnabled; $('duckDepth').value = p.duckDepth;
@@ -36,7 +39,7 @@
   const save = patch => { pendingPatch = { ...pendingPatch, ...patch }; clearTimeout(saveTimer); saveTimer = setTimeout(async () => { const next = pendingPatch; pendingPatch = {}; try { await api.saveSettings(next); $('saveStatus').textContent = '已保存'; } catch { pendingPatch = { ...next, ...pendingPatch }; $('saveStatus').textContent = '保存失败，请重试'; } }, 100); };
   for (const id of ['sharedVolume', 'duckDepth', 'sensitivity']) $(id).addEventListener('input', () => { labels(); save({ [id]: Number($(id).value) }); });
   $('duckEnabled').addEventListener('change', () => save({ duckEnabled: $('duckEnabled').checked }));
-  for (const id of ['micDevice', 'inputMode']) $(id).addEventListener('change', () => save({ [id]: $(id).value }));
+  for (const id of ['micDevice', 'outputDevice', 'inputMode']) $(id).addEventListener('change', () => save({ [id]: $(id).value }));
   for (const tab of document.querySelectorAll('[data-tab]')) tab.addEventListener('click', () => {
     for (const button of document.querySelectorAll('[data-tab]')) { button.classList.toggle('active', button === tab); button.setAttribute('aria-selected', String(button === tab)); }
     for (const panel of document.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== tab.dataset.tab;
