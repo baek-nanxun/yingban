@@ -29,6 +29,7 @@ async function waitForDescription(description, timeout = 30000) {
     app = await electron.launch({ args: [root, '--no-sandbox', `--user-data-dir=${join(temp, 'host')}`], env: { ...process.env, CLEARCALL_TEST: '1' } });
     const page = await app.firstWindow();
     await page.waitForFunction(() => window.clearcallDiagnostics);
+    await page.evaluate(() => { window.testPeerStates = []; window.clearcall.onSignal(message => { if (message.type === 'peer-state') window.testPeerStates.push({ muted: message.muted, sharing: message.sharing }); }); });
     await page.locator('#createRoom').click();
     await page.waitForFunction(() => document.querySelector('#inviteSelect').options.length > 0);
     const invite = await page.locator('#inviteSelect').inputValue(), url = new URL(invite);
@@ -38,14 +39,19 @@ async function waitForDescription(description, timeout = 30000) {
     await page.waitForFunction(() => document.querySelector('#remoteVoice').textContent === '未开麦');
     const [x1, y1, x2, y2] = await waitForDescription('开启麦克风');
     adb('shell', 'input', 'tap', String(Math.floor((x1 + x2) / 2)), String(Math.floor((y1 + y2) / 2)));
-    await page.waitForFunction(() => ['安静', '说话中'].includes(document.querySelector('#remoteVoice').textContent), null, { timeout: 30000 });
+    try { await page.waitForFunction(() => window.testPeerStates.some(state => state.muted === false), null, { timeout: 30000 }); }
+    catch (error) {
+      console.error('Android microphone state:', await page.evaluate(() => ({ states: window.testPeerStates, voice: document.querySelector('#remoteVoice').textContent, diagnostics: window.clearcallDiagnostics() })));
+      console.error('Android controls:', (await hierarchy()).replace(/[a-f0-9]{48}/g, '[redacted]'));
+      throw error;
+    }
     await page.locator('#shareScreen').click(); await page.locator('.source-item').first().click(); await page.locator('#confirmShare').click();
     await page.waitForFunction(() => window.clearcallDiagnostics().sharing, null, { timeout: 30000 });
     await waitForDescription('共享画面已接收', 60000);
     assert.equal((await page.evaluate(() => window.clearcallDiagnostics())).computerAudio, false);
     console.log('PASS: Android emulator joins a Linux desktop, enables its microphone, and renders shared video.');
   } catch (error) {
-    try { console.error(adb('logcat', '-d', '-t', '500')); } catch { }
+    try { console.error(adb('logcat', '-d', '-t', '300').replace(/[a-f0-9]{48}/g, '[redacted]')); } catch { }
     throw error;
   } finally {
     try { adb('shell', 'am', 'force-stop', 'com.yingban.mobile'); } catch { }
