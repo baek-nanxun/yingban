@@ -42,6 +42,10 @@ async function open(name) {
         dialogOpen: document.querySelector('#sourceDialog').open,
         sources: await window.clearcall.sources().then(items => items.map(({ id, name }) => ({ id, name }))).catch(e => ({ error: e.message }))
       })));
+      console.error('Linux native sources:', await host.app.evaluate(async ({ desktopCapturer }) => {
+        const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
+        return sources.map(({ id, name }) => ({ id, name }));
+      }));
       throw error;
     }
     assert.equal(await host.page.locator('#includeAudio').isDisabled(), true);
