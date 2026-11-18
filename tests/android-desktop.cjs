@@ -28,14 +28,16 @@ async function tapBounds(bounds) {
 }
 async function waitForText(labels, timeout = 15000) {
   const until = Date.now() + timeout;
+  let last = '';
   while (Date.now() < until) {
-    const xml = await hierarchy();
+    const xml = await hierarchy(); last = xml;
     for (const label of labels) {
       const node = xml.match(new RegExp(`text="${label}"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`));
       if (node) return node.slice(1).map(Number);
     }
     await pause(700);
   }
+  console.error('Screen-capture prompt:', Array.from(last.matchAll(/<node\b[^>]*>/g), match => match[0]).filter(node => /text="[^"]+"|content-desc="[^"]+"/.test(node)).join('\n').replace(/[a-f0-9]{48}/g, '[redacted]'));
   throw new Error(`Android screen-capture prompt not found: ${labels.join(', ')}`);
 }
 (async () => {
@@ -74,7 +76,7 @@ async function waitForText(labels, timeout = 15000) {
       await tapBounds(picker);
       await tapBounds(await waitForText(['Entire screen']));
     }
-    await tapBounds(await waitForText(['Start now', 'Start', 'Share screen']));
+    await tapBounds(await waitForText(['Start now', 'Start', 'Share screen', 'Share', 'Start sharing', 'Next']));
     await page.waitForFunction(() => window.clearcallDiagnostics().peerSharing && document.querySelector('#screenVideo').videoWidth > 0, null, { timeout: 60000 });
     await tapBounds(await waitForDescription('停止共享'));
     await page.waitForFunction(() => !window.clearcallDiagnostics().peerSharing, null, { timeout: 30000 });
