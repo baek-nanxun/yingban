@@ -1,5 +1,9 @@
 node_modules/
 dist/
+dist-linux/
+android/.gradle/
+android/local.properties
+android/**/build/
 native/bin/
 test-results/
 release/

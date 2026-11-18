@@ -9,6 +9,8 @@ const { release } = require('node:os');
 const { WebSocket } = require('ws');
 const { createRoom, parseInvite, discoverRoom } = require('./room.cjs');
 const { isNewerVersion, parseInstallerURL, selectInstaller } = require('./update.cjs');
+const isWindows = process.platform === 'win32';
+const windowIcon = join(__dirname, isWindows ? 'icon.ico' : 'icon.png');
 
 function nativeHelperPath() {
   const bundled = join(__dirname, '../native/bin/YingBan.Audio.exe');
@@ -19,13 +21,17 @@ function nativeHelperPath() {
 // Invitees need routable adapter candidates, including a Tailscale adapter.
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+if (process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland') {
+  app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
+  app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+}
 let window, settingsWindow, miniWindow, room, socket, capture, selectedSource, captureTask, grantedSource;
 let pendingProtocolInvite;
 let miniState = { inRoom: false, voiceOnly: false, mic: false };
 let windowMode = 'connect';
 let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', outputDevice: '', inputMode: 'standard', displayName: '', avatarData: '' };
 let deviceList = [], runtimeStatus = {};
-function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion() }; }
+function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion(), platform: process.platform, nativeAudio: isWindows && Number(release().split('.')[2]) >= 20348 }; }
 function sendSettings() {
   const snapshot = settingsSnapshot();
   sendWindow(window, 'settings:changed', snapshot);
@@ -45,7 +51,7 @@ function setWindowMode(mode) {
 function openSettings() {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.show(); settingsWindow.focus(); return; }
   const available = screen.getDisplayMatching(window.getBounds()).workArea;
-  settingsWindow = new BrowserWindow({ parent: window, width: Math.min(760, available.width), height: Math.min(640, available.height), minWidth: 660, minHeight: 540, title: '映伴设置', icon: join(__dirname, 'icon.ico'), backgroundColor: '#f6f1eb', autoHideMenuBar: true, show: false, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  settingsWindow = new BrowserWindow({ parent: window, width: Math.min(760, available.width), height: Math.min(640, available.height), minWidth: 660, minHeight: 540, title: '映伴设置', icon: windowIcon, backgroundColor: '#f6f1eb', autoHideMenuBar: true, show: false, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
   settingsWindow.loadFile(join(__dirname, 'settings.html'));
@@ -56,7 +62,7 @@ function openSettings() {
 function showMiniIfNeeded() {
   if (!window || window.isDestroyed() || !miniState.inRoom || !miniState.voiceOnly || !window.isMinimized()) { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.hide(); return; }
   if (!miniWindow || miniWindow.isDestroyed()) {
-    miniWindow = new BrowserWindow({ width: 68, height: 68, frame: false, transparent: true, resizable: false, movable: true, alwaysOnTop: true, skipTaskbar: true, show: false, title: '映伴麦克风', icon: join(__dirname, 'icon.ico'), webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    miniWindow = new BrowserWindow({ width: 68, height: 68, frame: false, transparent: true, resizable: false, movable: true, alwaysOnTop: true, skipTaskbar: true, show: false, title: '映伴麦克风', icon: windowIcon, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
     miniWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     miniWindow.loadFile(join(__dirname, 'mini.html'));
     miniWindow.webContents.once('did-finish-load', () => sendWindow(miniWindow, 'mini:state', miniState));
@@ -93,7 +99,7 @@ app.on('second-instance', (_event, argv) => queueProtocolInvite(protocolArgument
 app.on('open-url', (event, value) => { event.preventDefault(); queueProtocolInvite(value); });
 let captureGeneration = 0;
 async function ensureFirewallRules() {
-  if (process.env.CLEARCALL_TEST === '1') return { skipped: true };
+  if (!isWindows || process.env.CLEARCALL_TEST === '1') return { skipped: true };
   const rules = [
     ['YingBan Signaling TCP', 'TCP', '43127'],
     ['YingBan Room Discovery UDP', 'UDP', '43128'],
@@ -239,6 +245,7 @@ app.whenReady().then(() => {
   handle('sources:list', async () => {
     const sources = (await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: true })).filter(x => !x.name.startsWith('映伴')).map(x => ({ id: x.id, name: x.name, kind: x.id.startsWith('window:') ? 'app' : 'screen', thumbnail: x.thumbnail.toDataURL() }));
     try {
+      if (!isWindows) return sources;
       const { stdout } = await runFile(nativeHelperPath(), ['--list-windows', String(process.pid)], { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 });
       const visibleNames = new Set(sources.filter(source => source.kind === 'app').map(source => source.name));
       for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
@@ -251,6 +258,7 @@ app.whenReady().then(() => {
   });
   handle('sources:select', async id => {
     if (typeof id !== 'string' || !/^(?:screen|window):|^window-hwnd:/.test(id)) throw new Error('无效的共享窗口。');
+    if (!isWindows) { if (id.startsWith('window-hwnd:')) throw new Error('无效的共享窗口。'); selectedSource = id; grantedSource = undefined; return; }
     if (id.startsWith('window-hwnd:')) {
       const handle = id.slice('window-hwnd:'.length);
       await runFile(nativeHelperPath(), ['--restore-window', handle], { windowsHide: true, timeout: 5000 });
@@ -269,6 +277,7 @@ app.whenReady().then(() => {
     grantedSource = undefined;
   });
   handle('audio:start', () => {
+    if (!isWindows) throw new Error('当前 Linux 版本暂不支持共享应用声音，可继续共享画面和麦克风。');
     if (captureTask) return captureTask;
     const source = grantedSource;
     if (!source) throw new Error('请先选择并开始共享屏幕或应用。');
@@ -321,7 +330,7 @@ app.whenReady().then(() => {
     if (typeof gain !== 'number' || !Number.isFinite(gain) || gain < 0.05 || gain > 1) throw new Error('Invalid volume');
     if (capture && capture.stdin.writable) capture.stdin.write(`DUCK ${gain.toFixed(5)}\n`);
   });
-  handle('clipboard:copy', text => { if (typeof text === 'string' && text.length < 1200 && ((/^(?:yingban|clearcall):\/\//.test(text) && text.length < 300) || isWebInviteUrl(text) || isInviteClipboardText(text))) clipboard.writeText(text); });
+  handle('clipboard:copy', text => { if (typeof text === 'string' && text.length < 1200 && (/^\d{6}$/.test(text) || (/^(?:yingban|clearcall):\/\//.test(text) && text.length < 300) || isWebInviteUrl(text) || isInviteClipboardText(text))) clipboard.writeText(text); });
   handle('updates:check', async () => {
     const repo = process.env.YINGBAN_GITHUB_REPO || 'baek-nanxun/yingban-windows';
     if (!/^[^/]+\/yingban-windows$/.test(repo)) return { available: false, configured: false, message: 'GitHub 更新地址尚未配置。' };
@@ -332,7 +341,7 @@ app.whenReady().then(() => {
       if (response.ok) {
         const latest = await response.json();
         const assets = (latest.assets || []).map(asset => ({ name: asset.name, url: asset.browser_download_url }));
-        const installer = assets.find(asset => /^YingBan-Setup-\d+\.\d+\.\d+\.exe$/i.test(asset.name));
+        const installer = isWindows ? assets.find(asset => /^YingBan-Setup-\d+\.\d+\.\d+\.exe$/i.test(asset.name)) : undefined;
         return { available: isNewerVersion(latest.tag_name, current), configured: true, tag: latest.tag_name, url: latest.html_url, downloadURL: installer?.url, assets, testMode: process.env.CLEARCALL_TEST === '1' };
       }
     } catch {}
@@ -343,7 +352,7 @@ app.whenReady().then(() => {
     const match = page.url.match(/\/releases\/tag\/([^/?#]+)/);
     if (!match) return { available: false, configured: true, tag: current, url: `https://github.com/${repo}/releases` };
     const tag = decodeURIComponent(match[1]);
-    return { available: isNewerVersion(tag, current), configured: true, tag, url: page.url, downloadURL: `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/YingBan-Setup-${tag.replace(/^v/i, '')}.exe`, assets: [], testMode: process.env.CLEARCALL_TEST === '1' };
+    return { available: isNewerVersion(tag, current), configured: true, tag, url: page.url, downloadURL: isWindows ? `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/YingBan-Setup-${tag.replace(/^v/i, '')}.exe` : undefined, assets: [], testMode: process.env.CLEARCALL_TEST === '1' };
   });
   handle('updates:download', async info => {
     const url = typeof info === 'string' ? info : info?.downloadURL;
@@ -370,14 +379,14 @@ app.whenReady().then(() => {
     } catch (error) { await fs.promises.unlink(file).catch(() => {}); throw error; }
   });
   handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/(?:releases\/|releases\/download\/)/.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
-  handle('app:info', () => ({ version: app.getVersion(), windows: release(), nativeAudio: Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
-  if (process.platform === 'win32') {
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, systemRelease: release(), windows: isWindows ? release() : undefined, nativeAudio: isWindows && Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
+  if (process.platform === 'win32' || process.platform === 'linux') {
     for (const scheme of ['yingban', 'clearcall']) {
       if (process.defaultApp && process.argv.length >= 2) app.setAsDefaultProtocolClient(scheme, process.execPath, [process.argv[1]]);
       else app.setAsDefaultProtocolClient(scheme);
     }
   }
-  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: join(__dirname, 'icon.ico'), autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: windowIcon, autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => { void leave(); });

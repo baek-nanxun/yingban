@@ -354,12 +354,12 @@
           for (const child of $('sourceGrid').children) child.classList.toggle('selected', child === button);
           $('confirmShare').disabled = false;
           setText('audioScopeLabel', source.kind === 'app' ? '同时共享所选应用的声音' : '同时共享其他所有应用的声音');
-          setText('scopeHint', source.kind === 'app' ? '仅共享此应用的声音；同一浏览器可能包含其他标签页。' : '共享其他所有应用声音，映伴通话声音会被排除。');
+          setText('scopeHint', !info.nativeAudio ? '当前系统暂不支持共享应用声音，可以共享画面并使用麦克风。' : source.kind === 'app' ? '仅共享此应用的声音；同一浏览器可能包含其他标签页。' : '共享其他所有应用声音，映伴通话声音会被排除。');
         });
         $('sourceGrid').append(button);
       }
       if (!sources.length) throw new Error('没有找到可共享的屏幕或窗口。');
-      $('includeAudio').disabled = !info.nativeAudio; if (!info.nativeAudio) $('includeAudio').checked = false;
+      $('includeAudio').disabled = !info.nativeAudio; if (!info.nativeAudio) { $('includeAudio').checked = false; setText('scopeHint', '当前系统暂不支持共享应用声音，可以共享画面并使用麦克风。'); }
       $('sourceDialog').showModal();
     } catch (error) { notify(error.message, 'error'); }
     finally { s.busy = false; controls(); }
