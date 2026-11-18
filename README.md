@@ -1,6 +1,16 @@
-# 映伴 YingBan · Windows
+# 映伴 YingBan
 
 映伴是一个双人屏幕共享和语音通话原型，不需要注册账号或云服务器。两台 Windows 电脑可以在同一局域网内连接，也可以先加入同一个 Tailscale 网络。
+
+## Linux 和 Android 测试版本
+
+仓库还包含面向 Linux x86_64 的桌面构建，以及 Android 8.0 及以上的手机构建。它们使用与 Windows 相同的房间号、邀请链接和 WebRTC 信令，可在同一局域网或可直连的 Tailscale 网络中使用。房间号依赖局域网 UDP 广播，跨网络或 Wi-Fi 隔离时请使用邀请链接；默认没有公网中继服务。
+
+- Linux 可创建或加入房间、收发麦克风、观看或共享画面。当前版本**不采集 Linux 应用或系统声音**，不会将整机声音作为替代；观看 Windows 共享时仍可接收 Windows 发送的声音。Linux 的共享应用声音和共享端自动降低应用音量尚未实现。Wayland 画面共享还取决于系统的 PipeWire 和桌面门户实现。
+- Android 可创建或加入房间、收发麦克风、观看对方画面和声音、共享手机画面，并设置昵称和头像。手机共享**只发送画面与麦克风**，不会采集其他应用的播放声音；屏幕共享需用户通过系统授权，并显示系统前台服务通知。手机最小化、息屏或被系统后台限制时，通话和麦克风是否持续工作取决于设备，尚不能保证。
+- Android 构建目前是调试签名的测试包，不能视为正式发布版本；不同机器或 CI 生成的调试签名可能不同，后续版本可能需要先卸载旧包。Linux 和 Android 的 Wi-Fi、防火墙、蓝牙音质、画面采集和回声消除仍需在目标设备上实测。
+
+构建 Linux 包需在 Linux 上执行 `npm ci` 和 `npm run dist:linux`，输出 AppImage 与 DEB。构建 Android 测试包需 JDK 17、Android SDK 35、Build Tools 35.0.0 和 Gradle 8.11.1，在仓库根目录执行 `gradle -p android :app:assembleDebug`，输出 `android/app/build/outputs/apk/debug/app-debug.apk`。这些构建产物不包含正式发布签名。
 
 ## 使用
 
