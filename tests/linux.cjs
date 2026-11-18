@@ -48,7 +48,8 @@ async function open(name) {
       }));
       throw error;
     }
-    assert.equal(await host.page.locator('#includeAudio').isDisabled(), true);
+    assert.equal(await host.page.locator('#includeAudio').isDisabled(), false);
+    await host.page.locator('#includeAudio').uncheck();
     await source.click();
     await host.page.locator('#confirmShare').click();
     await guest.page.waitForFunction(() => window.clearcallDiagnostics().peerSharing && document.querySelector('#screenVideo').videoWidth > 0, null, { timeout: 30000 });
@@ -64,7 +65,7 @@ async function open(name) {
     const packagedPage = await packaged.firstWindow();
     await packagedPage.waitForFunction(() => window.clearcallDiagnostics);
     const info = await packagedPage.evaluate(() => window.clearcall.info());
-    assert.equal(info.platform, 'linux'); assert.equal(info.nativeAudio, false);
+    assert.equal(info.platform, 'linux'); assert.equal(info.nativeAudio, true);
     console.log('PASS: packaged Linux application starts with the expected platform capabilities.');
   } finally {
     for (const app of apps) await app.close().catch(() => {});

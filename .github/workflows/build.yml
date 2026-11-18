@@ -37,7 +37,7 @@ jobs:
             dist/*.exe
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -54,8 +54,10 @@ jobs:
           path: |
             dist-linux/*.AppImage
             dist-linux/*.deb
-      - name: Install virtual desktop window manager
-        run: sudo apt-get update && sudo apt-get install -y openbox
+      - name: Install virtual desktop and audio test dependencies
+        run: sudo apt-get update && sudo apt-get install -y openbox pipewire pipewire-pulse wireplumber pulseaudio-utils dbus-x11
+      - name: Verify isolated audio capture and ducking
+        run: bash scripts/test-linux-audio.sh
       - name: Verify Linux desktop and screen sharing
         run: xvfb-run -a -s '-screen 0 1280x800x24' sh -c 'openbox >/tmp/yingban-openbox.log 2>&1 & exec npm run test:linux'
 

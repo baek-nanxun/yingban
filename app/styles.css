@@ -11,3 +11,4 @@ body.settings-window{grid-template-rows:1fr}.settings-shell{display:grid;grid-te
 /* Warm brand artwork is shared by the header, settings page and Windows icon. */
 .brand-mark{display:block;object-fit:contain;border-radius:7px}
 .about-mark{display:block;object-fit:contain}
+.audio-app-picker{margin-top:14px;color:#79614e;font-size:11px}.audio-app-picker label{display:block;margin-bottom:7px}.audio-app-picker>div{display:flex;align-items:center;gap:8px}.audio-app-picker select{flex:1}.audio-app-picker .button{padding:7px 12px}

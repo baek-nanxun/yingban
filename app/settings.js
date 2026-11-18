@@ -37,7 +37,7 @@
     $('sharedVolume').value = p.sharedVolume; $('sensitivity').value = p.sensitivity;
     $('duckEnabled').checked = p.duckEnabled; $('duckDepth').value = p.duckDepth;
     $('versionLabel').textContent = `YingBan ${value.version}`; $('aboutVersion').textContent = `版本 ${value.version} · ${value.platform === 'linux' ? 'Linux' : 'Windows'}`;
-    $('scopeDescription').textContent = value.platform === 'linux' ? 'Linux 当前版本可以共享画面和麦克风，暂不支持采集应用声音。' : '应用窗口只共享所属应用的声音；整屏共享包含其他应用声音，并排除映伴通话。同一浏览器的多个标签页可能共用音频进程。';
+    $('scopeDescription').textContent = value.platform === 'linux' ? '共享窗口时请选择对应的声音应用；整屏共享采集可识别的其他应用，并排除映伴通话。同一浏览器的多个标签页可能共用音频。' : '应用窗口只共享所属应用的声音；整屏共享包含其他应用声音，并排除映伴通话。同一浏览器的多个标签页可能共用音频进程。';
     applyStatus(value.status || runtime);
   }
   let pendingPatch = {};
