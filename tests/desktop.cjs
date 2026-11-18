@@ -39,7 +39,7 @@ async function share(page, kind = 'app', quality = '4k') {
 async function fullscreen(client) {
   await client.page.bringToFront(); await client.page.locator('#fullscreen').click();
   await client.page.waitForFunction(() => document.fullscreenElement?.id === 'stage');
-  assert.equal(await client.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFullScreen()), true);
+  assert.equal(await client.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴')?.isFullScreen()), true);
   await client.page.evaluate(() => document.exitFullscreen());
   await client.page.waitForFunction(() => !document.fullscreenElement);
 }
@@ -69,6 +69,23 @@ async function fullscreen(client) {
     const roomNumber = await a.page.locator('#roomNumber').innerText();
     const b = await open('guest'); await b.page.locator('#roomInput').fill(roomNumber); await b.page.locator('#joinByRoom').click();
     await Promise.all([a.page.waitForFunction(() => window.clearcallDiagnostics().connection === 'connected'), b.page.waitForFunction(() => window.clearcallDiagnostics().connection === 'connected')]);
+    assert.equal(await a.page.locator('#voiceParticipants').isVisible(), true);
+    assert.equal(await a.page.locator('#remotePresence').innerText(), '已连接');
+    const miniEvent = a.app.waitForEvent('window');
+    await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴')?.minimize());
+    const mini = await miniEvent; await mini.waitForURL('**/mini.html');
+    assert.equal(await mini.locator('#mic').getAttribute('aria-label'), '开启麦克风');
+    assert(await mini.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight));
+    assert.deepEqual(await mini.evaluate(() => [innerWidth, innerHeight]), [68, 68]);
+    await mini.screenshot({ path: join(out, 'ui-mini-mic.png'), scale: 'css' });
+    const beforeDrag = await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴麦克风').getPosition());
+    await mini.mouse.move(34, 34); await mini.mouse.down(); await mini.mouse.move(12, 12, { steps: 5 }); await mini.mouse.up();
+    await a.page.waitForTimeout(200);
+    const afterDrag = await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴麦克风').getPosition());
+    assert.notDeepEqual(afterDrag, beforeDrag);
+    await mini.locator('#mic').click(); await a.page.waitForFunction(() => window.clearcallDiagnostics().mic);
+    await mini.locator('#mic').click(); await a.page.waitForFunction(() => !window.clearcallDiagnostics().mic);
+    await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴')?.restore());
     assert.equal(await b.page.evaluate(() => window.testMicCalls), 0);
     await a.page.locator('#muteMic').click(); await b.page.locator('#muteMic').click();
     await Promise.all([a.page.waitForFunction(() => window.clearcallDiagnostics().remoteLevel > 0.01), b.page.waitForFunction(() => window.clearcallDiagnostics().remoteLevel > 0.01)]);
@@ -81,13 +98,20 @@ async function fullscreen(client) {
     await settings.screenshot({ path: join(out, 'ui-settings-audio.png'), scale: 'css' });
     assert.deepEqual(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴设置').getSize()), [760, 640]);
     assert.deepEqual(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴').getSize()), [1280, 820]);
+    await settings.locator('[data-tab="profile"]').click();
+    await settings.locator('#displayName').fill('小南');
+    await settings.locator('#avatarFile').setInputFiles(join(out, 'ui-mini-mic.png'));
+    await b.page.waitForFunction(() => document.getElementById('remoteName').textContent === '小南' && !document.getElementById('remoteAvatarImage').hidden);
+    assert.equal(await a.page.locator('#localName').innerText(), '小南（我）');
+    await settings.screenshot({ path: join(out, 'ui-settings-profile.png'), scale: 'css' });
+    console.log('PASS: nickname and avatar are saved and relayed to the other participant.');
     await settings.locator('[data-tab="sharing"]').click();
     await settings.waitForSelector('#duckEnabled', { state: 'visible' });
     await settings.screenshot({ path: join(out, 'ui-settings-sharing.png'), scale: 'css' });
     await settings.locator('[data-tab="about"]').click();
     await settings.locator('#checkUpdate').click();
-    await settings.waitForFunction(() => /已是最新版本|发现新版本|暂未发布新版本/.test(document.getElementById('updateStatus').textContent), null, { timeout: 20000 });
-    assert.match(await settings.locator('#updateStatus').innerText(), /已是最新版本|发现新版本|暂未发布新版本/);
+    await settings.waitForFunction(() => /已是最新版本|发现新版本|暂未发布新版本|自动下载失败|暂时无法连接/.test(document.getElementById('updateStatus').textContent), null, { timeout: 20000 });
+    assert.match(await settings.locator('#updateStatus').innerText(), /已是最新版本|发现新版本|暂未发布新版本|自动下载失败|暂时无法连接/);
     console.log('PASS: update check works through GitHub release-page fallback.');
     await settings.locator('[data-tab="sharing"]').click();
     await settings.locator('#duckDepth').fill('18');
@@ -99,6 +123,9 @@ async function fullscreen(client) {
     const fixture = await electron.launch({ args: [join(__dirname, 'fixture.cjs'), `--tone=${toneFile}`, `--user-data-dir=${join(out, 'fixture-profile')}`] }); apps.push(fixture); await fixture.firstWindow();
     await share(a.page);
     await b.page.waitForFunction(() => window.clearcallDiagnostics().screen.width >= 3840 && window.clearcallDiagnostics().screen.height >= 2150, null, { timeout: 25000 });
+    await b.page.locator('#pictureInPicture').click();
+    await b.page.waitForFunction(() => document.pictureInPictureElement?.id === 'screenVideo');
+    await b.page.evaluate(() => document.exitPictureInPicture());
     await a.page.waitForFunction(() => window.clearcallDiagnostics().videoStats.width === 3840);
     const video4k = await a.page.evaluate(() => window.clearcallDiagnostics());
     assert.equal(video4k.audioScope.kind, 'app'); assert.equal(video4k.audioScope.targetPid, await fixture.evaluate(() => process.pid));

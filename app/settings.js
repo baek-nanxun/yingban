@@ -19,6 +19,10 @@
   function apply(value) {
     snapshot = value;
     const p = value.preferences;
+    if (document.activeElement !== $('displayName')) $('displayName').value = p.displayName || '';
+    $('profileInitial').textContent = Array.from(p.displayName || '我')[0] || '我';
+    $('profileImage').hidden = !p.avatarData; $('profileInitial').hidden = Boolean(p.avatarData);
+    if (p.avatarData) $('profileImage').src = p.avatarData; else $('profileImage').removeAttribute('src');
     const selection = p.micDevice;
     $('micDevice').replaceChildren(new Option('系统默认', ''));
     for (const d of (value.devices || []).filter(d => d.kind === 'audioinput' && !['default', 'communications'].includes(d.deviceId))) $('micDevice').add(new Option(d.label || '麦克风', d.deviceId));
@@ -37,6 +41,22 @@
   }
   let pendingPatch = {};
   const save = patch => { pendingPatch = { ...pendingPatch, ...patch }; clearTimeout(saveTimer); saveTimer = setTimeout(async () => { const next = pendingPatch; pendingPatch = {}; try { await api.saveSettings(next); $('saveStatus').textContent = '已保存'; } catch { pendingPatch = { ...next, ...pendingPatch }; $('saveStatus').textContent = '保存失败，请重试'; } }, 100); };
+  $('displayName').addEventListener('input', () => { $('profileInitial').textContent = Array.from($('displayName').value.trim() || '我')[0] || '我'; save({ displayName: $('displayName').value }); });
+  $('chooseAvatar').addEventListener('click', () => $('avatarFile').click());
+  $('removeAvatar').addEventListener('click', () => { $('profileStatus').textContent = ''; save({ avatarData: '' }); });
+  $('avatarFile').addEventListener('change', async () => {
+    const file = $('avatarFile').files?.[0]; $('avatarFile').value = '';
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) { $('profileStatus').textContent = '请选择不超过 10 MB 的 JPG、PNG 或 WebP 图片。'; return; }
+    try {
+      const bitmap = await createImageBitmap(file), canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
+      const size = Math.min(bitmap.width, bitmap.height), context = canvas.getContext('2d');
+      context.drawImage(bitmap, (bitmap.width - size) / 2, (bitmap.height - size) / 2, size, size, 0, 0, 128, 128); bitmap.close();
+      const avatarData = canvas.toDataURL('image/jpeg', 0.78);
+      if (avatarData.length > 48000) throw new Error('图片过大');
+      $('profileStatus').textContent = ''; save({ avatarData });
+    } catch { $('profileStatus').textContent = '无法读取这张图片，请换一张后重试。'; }
+  });
   for (const id of ['sharedVolume', 'duckDepth', 'sensitivity']) $(id).addEventListener('input', () => { labels(); save({ [id]: Number($(id).value) }); });
   $('duckEnabled').addEventListener('change', () => save({ duckEnabled: $('duckEnabled').checked }));
   for (const id of ['micDevice', 'outputDevice', 'inputMode']) $(id).addEventListener('change', () => save({ [id]: $(id).value }));
@@ -44,12 +64,32 @@
     for (const button of document.querySelectorAll('[data-tab]')) { button.classList.toggle('active', button === tab); button.setAttribute('aria-selected', String(button === tab)); }
     for (const panel of document.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== tab.dataset.tab;
   });
+  let downloadURL = '';
   $('checkUpdate').addEventListener('click', async () => {
     $('checkUpdate').disabled = true; $('updateStatus').textContent = '正在检查更新…'; $('downloadUpdate').hidden = true;
-    try { const r = await api.checkUpdates(); $('updateStatus').textContent = !r.configured ? '更新地址未配置' : r.available ? `发现新版本 ${r.tag}` : `已是最新版本 ${r.tag}`; updateURL = r.url; $('downloadUpdate').hidden = !r.available || !r.url; }
-    catch (error) { $('updateStatus').textContent = error.message.includes('404') ? '暂未发布新版本' : '暂时无法连接 GitHub'; }
-    finally { $('checkUpdate').disabled = false; }
+    try {
+      const r = await api.checkUpdates(); updateURL = r.url || ''; downloadURL = r.downloadURL || '';
+      if (!r.configured) $('updateStatus').textContent = '更新地址未配置';
+      else if (!r.available) $('updateStatus').textContent = '已是最新版本';
+      else if (downloadURL && !r.testMode) {
+        $('updateStatus').textContent = `发现新版本 ${r.tag}，正在下载安装包…`;
+        $('updateDialogTitle').textContent = `发现新版本 ${r.tag}`; $('updateDialogStatus').textContent = '正在下载安装包…'; $('updateProgress').value = 0; $('manualUpdate').hidden = true; $('closeUpdateDialog').textContent = '后台下载'; $('updateDialog').showModal();
+        await api.downloadUpdate({ downloadURL });
+        $('updateStatus').textContent = '下载完成，映伴即将退出并安装更新。'; $('updateDialogStatus').textContent = $('updateStatus').textContent;
+      } else {
+        $('updateStatus').textContent = `发现新版本 ${r.tag}，请前往下载。`;
+        $('downloadUpdate').hidden = !updateURL;
+      }
+    } catch (error) {
+      $('updateStatus').textContent = updateURL ? '自动下载失败，可前往手动下载。' : error.message.includes('404') ? '暂未发布新版本' : '暂时无法连接 GitHub';
+      $('downloadUpdate').hidden = !updateURL;
+      if ($('updateDialog').open) { $('updateDialogStatus').textContent = $('updateStatus').textContent; $('manualUpdate').hidden = !updateURL; $('closeUpdateDialog').textContent = '关闭'; }
+    } finally { $('checkUpdate').disabled = false; }
   });
+  $('downloadUpdate').textContent = '前往手动下载';
   $('downloadUpdate').addEventListener('click', () => { if (updateURL) void api.openUpdate(updateURL); });
+  $('manualUpdate').addEventListener('click', () => { if (updateURL) void api.openUpdate(updateURL); });
+  $('closeUpdateDialog').addEventListener('click', () => $('updateDialog').close());
+  api.onUpdateProgress(progress => { if (progress?.total) { $('updateStatus').textContent = `正在下载更新… ${progress.percent}%`; $('updateDialogStatus').textContent = $('updateStatus').textContent; $('updateProgress').value = progress.percent; } });
   api.onSettings(apply); api.onRuntime(applyStatus); void api.getSettings().then(apply);
 })();

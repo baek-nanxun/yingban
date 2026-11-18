@@ -24,9 +24,12 @@ with ZipFile(source_zip, 'w', ZIP_DEFLATED, compresslevel=6) as archive:
         if file.is_file() and not file.is_relative_to(output) and not any(part in ignored for part in rel.parts) and rel.parts[:2] != ('native', 'bin'):
             archive.write(file, Path('YingBan-source') / rel)
 artifacts = []
+installer = root / 'dist' / f'YingBan-Setup-{version}.exe'
 for file in (app_zip, source_zip):
     with ZipFile(file) as archive:
         assert archive.testzip() is None, 'Archive CRC check failed'
     artifacts.append({'file': file.name, 'bytes': file.stat().st_size, 'sha256': hashlib.file_digest(file.open('rb'), 'sha256').hexdigest()})
+if installer.is_file():
+    artifacts.append({'file': installer.name, 'bytes': installer.stat().st_size, 'sha256': hashlib.file_digest(installer.open('rb'), 'sha256').hexdigest()})
 (output / 'checksums.json').write_text(json.dumps(artifacts, indent=2), encoding='utf-8')
 print(json.dumps(artifacts, indent=2))

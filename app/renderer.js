@@ -2,7 +2,7 @@
   'use strict';
   const api = window.clearcall;
   const $ = id => document.getElementById(id);
-  const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 15, peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
+  const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 15, peerJoined: false, peerName: '', peerAvatar: '', peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
   let ctx, master, sharedMaster, silence, outputGain, micStream, micMonitor, pc, tx, localVideo, remoteVideo;
   let outgoingSystem, pcmNode, pcmDestination, remoteMic, remoteSystem;
   let moduleReady, selectedSource, lastTarget = -1, info = {};
@@ -10,6 +10,7 @@
   let localDucked = false;
   let audioScope, micGeneration = 0;
   let roomId = '', inputMode = 'standard', outputDevice = '', toastTimer, audioInitialization, settingsVisible = false;
+  let localProfile = { displayName: '', avatarData: '' };
   const setText = (id, text) => { if ($(id).textContent !== text) $(id).textContent = text; };
   const videoProfiles = {
     '4k': { label: '4K', width: 3840, height: 2160, fps: 30, bitrate: 25000000 },
@@ -25,6 +26,7 @@
   };
   const signal = message => api.send(message).catch(() => {});
   const peerState = () => signal({ type: 'peer-state', sharing: Boolean(localVideo), muted: s.muted, speaking: s.speaking && !s.muted, computerAudio: Boolean(outgoingSystem), sourceDucked: localDucked, duckEnabled: s.duckEnabled, duckDepth: s.duckDepth });
+  const sendProfile = () => signal({ type: 'profile', displayName: localProfile.displayName, avatarData: localProfile.avatarData });
   function connection(label, connected = false) {
     $('connectionStatus').textContent = label;
     $('connectionDot').className = connected ? 'online' : '';
@@ -121,6 +123,8 @@
     $('muteMic').disabled = !s.inRoom || s.micBusy;
     $('micDevice').disabled = s.micBusy;
     $('shareScreen').disabled = !s.inRoom || Boolean(localVideo) || s.busy;
+    $('fullscreen').disabled = !s.inRoom;
+    $('pictureInPicture').disabled = !$('screenVideo').srcObject || !document.pictureInPictureEnabled;
     $('muteMic').title = $('muteMic').ariaLabel = s.micBusy ? '麦克风启动中' : micStream ? '关闭麦克风' : '开启麦克风';
     $('muteMic').setAttribute('aria-pressed', String(Boolean(micStream)));
     $('muteMic').querySelector('use').setAttribute('href', `icons.svg#${micStream ? 'mic' : 'mic-off'}`);
@@ -139,11 +143,25 @@
     $('duckDepth').value = receivingOnly ? (s.peer.duckDepth || 15) : s.duckDepth;
     $('duckDepthLabel').textContent = `${$('duckDepth').value} dB`;
     $('duckDescription').textContent = receivingOnly ? '视频音量由共享端统一控制。你说话时，对方会降低视频声音，两边一起变小。' : '任意一方说话时，在共享端降低视频声音。观看端跟随变化，不会再次自动压低。';
+    void api.setMiniState({ inRoom: s.inRoom, voiceOnly: s.inRoom && !localVideo && !s.peer.sharing, mic: Boolean(micStream) });
   }
   function refreshVideo() {
     const stream = s.peer.sharing ? remoteVideo : localVideo, show = Boolean(stream && (s.peer.sharing || localVideo));
     if ($('screenVideo').srcObject !== stream) $('screenVideo').srcObject = stream || null;
-    $('screenVideo').classList.toggle('hidden', !show); $('emptyStage').classList.toggle('hidden', show);
+    $('screenVideo').classList.toggle('hidden', !show); $('emptyStage').classList.toggle('hidden', show); $('emptyStage').classList.toggle('voice-only', Boolean(s.inRoom && !show && s.peerJoined));
+    $('voiceParticipants').classList.toggle('hidden', !(s.inRoom && !show && s.peerJoined));
+    $('fullscreen').disabled = !s.inRoom;
+    $('pictureInPicture').disabled = !show || !document.pictureInPictureEnabled;
+    $('localPresence').textContent = '已加入'; $('remotePresence').textContent = s.peerJoined ? (pc?.connectionState === 'connected' ? '已连接' : '已加入，正在连接') : '等待加入';
+    $('remoteAvatar').classList.toggle('online', s.peerJoined);
+    $('localName').textContent = localProfile.displayName ? `${localProfile.displayName}（我）` : '我';
+    $('remoteName').textContent = s.peerName || '对方';
+    for (const [prefix, name, avatar, fallback] of [['local', localProfile.displayName, localProfile.avatarData, '我'], ['remote', s.peerName, s.peerAvatar, '对']]) {
+      const img = $(`${prefix}AvatarImage`), initial = $(`${prefix}Initial`);
+      initial.textContent = Array.from(name || fallback)[0] || fallback;
+      img.hidden = !avatar; initial.hidden = Boolean(avatar);
+      if (avatar) img.src = avatar; else img.removeAttribute('src');
+    }
     $('stageTitle').textContent = s.peer.sharing ? '对方正在共享' : localVideo ? '我正在共享 · 本地预览' : '共享画面';
     $('shareStatus').textContent = show ? (s.peer.sharing ? '正在接收共享画面' : '正在共享 · 本地预览静音') : '未共享';
     $('stageHint').textContent = s.inRoom ? (pc ? '点击下方屏幕按钮，或等待对方共享。' : '等待对方加入，也可以先共享屏幕。') : '';
@@ -197,13 +215,13 @@
     };
     current.onconnectionstatechange = () => {
       if (current !== pc) return;
-      if (current.connectionState === 'connected') { connection('通话已连接', true); void configureAudio(); void configureVideo().catch(error => notify(error.message, 'error')); notify('双方可以说话。共享电脑声音时，不会把对方的声音重新传回去。', 'success'); }
+      if (current.connectionState === 'connected') { connection('通话已连接', true); refreshVideo(); void configureAudio(); void configureVideo().catch(error => notify(error.message, 'error')); notify('双方可以说话。共享电脑声音时，不会把对方的声音重新传回去。', 'success'); }
       else if (current.connectionState === 'failed') { connection('媒体连接失败'); notify('音视频无法直连。请确认两台电脑在同一局域网或同一 Tailscale 网络，并允许映伴通过防火墙，然后重新加入。', 'error'); }
       else if (current.connectionState === 'disconnected') connection('网络中断，正在尝试恢复');
     };
     if (tx) await attachTracks();
     if (initiator) { await current.setLocalDescription(await current.createOffer()); await signal({ type: 'description', description: current.localDescription.toJSON() }); }
-    await peerState(); connection('正在建立媒体连接'); refreshVideo();
+    await peerState(); await sendProfile(); connection('正在建立媒体连接'); refreshVideo();
   }
   async function attachTracks() {
     await tx.mic.sender.replaceTrack(micStream?.getAudioTracks()[0] || null);
@@ -246,7 +264,7 @@
   api.onSignal(message => {
     signalQueue = signalQueue.then(async () => {
       if (message.type === 'welcome') s.role = message.role;
-      else if (message.type === 'peer-ready') { if (s.inRoom) await buildPeer(s.role === 'host'); }
+      else if (message.type === 'peer-ready') { if (s.inRoom) { s.peerJoined = true; controls(); refreshVideo(); await buildPeer(s.role === 'host'); } }
       else if (message.type === 'description' && s.inRoom) {
         if (!pc) await buildPeer(false);
         await pc.setRemoteDescription(message.description);
@@ -262,8 +280,12 @@
         if (pc?.remoteDescription) await pc.addIceCandidate(message.candidate); else s.candidates.push(message.candidate);
       } else if (message.type === 'peer-state') {
         s.peer = { sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(6, Math.min(24, message.duckDepth)) : 15 }; controls(); refreshVideo();
+      } else if (message.type === 'profile') {
+        s.peerName = typeof message.displayName === 'string' ? message.displayName.trim().slice(0, 20) : '';
+        s.peerAvatar = typeof message.avatarData === 'string' && message.avatarData.length <= 48000 && /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(message.avatarData) ? message.avatarData : '';
+        refreshVideo();
       } else if (message.type === 'peer-left') {
-        closePeer(); connection(s.role === 'host' ? '等待对方重新加入' : '对方已离开'); notify('对方已离开通话。');
+        s.peerJoined = false; s.peerName = s.peerAvatar = ''; closePeer(); connection(s.role === 'host' ? '等待对方重新加入' : '对方已离开'); notify('对方已离开通话。');
       } else if (message.type === 'closed' && s.inRoom) { await endCall(); notify(message.message || '通话已断开。', 'error'); }
     }).catch(error => notify(`连接处理失败：${error.message}`, 'error'));
   });
@@ -311,7 +333,7 @@
     await api.stopAudio(); lastLocalTarget = 1; localDucked = false; await peerState(); controls(); refreshVideo();
   }
   async function endCall() {
-    s.inRoom = false; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
+    s.inRoom = false; s.peerJoined = false; s.peerName = s.peerAvatar = ''; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
     await stopMicrophone();
     await api.leaveRoom();
     if (ctx) { await ctx.close().catch(() => {}); ctx = undefined; }
@@ -468,14 +490,22 @@
   $('sharedVolume').addEventListener('input', () => { $('sharedVolumeLabel').textContent = `${$('sharedVolume').value}%`; });
   $('sensitivity').addEventListener('input', () => { const v = Number($('sensitivity').value); $('sensitivityLabel').textContent = v < 36 ? '偏低' : v > 49 ? '偏高' : '适中'; });
   $('fullscreen').addEventListener('click', () => { void (document.fullscreenElement ? document.exitFullscreen() : $('stage').requestFullscreen()).catch(error => notify(`全屏未能开启：${error.message}`, 'error')); });
+  $('pictureInPicture').addEventListener('click', () => {
+    const video = $('screenVideo');
+    void (document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture()).catch(error => notify(`浮窗未能开启：${error.message}`, 'error'));
+  });
+  $('screenVideo').addEventListener('enterpictureinpicture', () => { $('pictureInPicture').title = $('pictureInPicture').ariaLabel = '退出浮窗'; $('pictureInPicture').querySelector('use').setAttribute('href', 'icons.svg#x'); });
+  $('screenVideo').addEventListener('leavepictureinpicture', () => { $('pictureInPicture').title = $('pictureInPicture').ariaLabel = '浮窗'; $('pictureInPicture').querySelector('use').setAttribute('href', 'icons.svg#picture-in-picture'); });
   document.addEventListener('fullscreenchange', () => { $('fullscreen').title = $('fullscreen').ariaLabel = document.fullscreenElement ? '退出全屏' : '全屏'; $('fullscreen').querySelector('use').setAttribute('href', `icons.svg#${document.fullscreenElement ? 'minimize-2' : 'maximize-2'}`); });
   function applyPreferences({ preferences: p }) {
     const restart = micStream && (inputMode !== p.inputMode || $('micDevice').value !== p.micDevice);
     s.duckEnabled = p.duckEnabled; s.duckDepth = p.duckDepth; inputMode = p.inputMode;
+    const profileChanged = localProfile.displayName !== p.displayName || localProfile.avatarData !== p.avatarData;
+    localProfile = { displayName: p.displayName || '', avatarData: p.avatarData || '' };
     if (outputDevice !== p.outputDevice) void setOutputDevice(p.outputDevice);
     $('sharedVolume').value = p.sharedVolume; $('sensitivity').value = p.sensitivity;
     if (Array.from($('micDevice').options).some(o => o.value === p.micDevice)) $('micDevice').value = p.micDevice;
-    controls(); void peerState();
+    controls(); refreshVideo(); void peerState(); if (profileChanged && s.inRoom) void sendProfile();
     if (restart) void stopMicrophone().then(() => microphone()).catch(error => notify(error.message, 'error'));
   }
   api.onSettings(applyPreferences); api.onSettingsVisible(visible => { settingsVisible = visible; });
@@ -484,6 +514,7 @@
     $('inviteInput').value = value;
     if (!s.inRoom && !s.busy) void begin('join');
   });
+  api.onMiniCommand(action => { if (action !== 'toggle-mic') return; void (micStream ? stopMicrophone() : microphone()).catch(error => notify(error.message, 'error')); });
   void api.getSettings().then(applyPreferences);
   setInterval(() => { if (settingsVisible) void api.reportStatus({ mic: Boolean(micStream), connected: pc?.connectionState === 'connected', speaking: s.speaking, remoteSpeaking: Boolean(s.peer.speaking), remoteMuted: s.peer.muted, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharing: Boolean(localVideo), peerSharing: s.peer.sharing, peerDuckEnabled: s.peer.duckEnabled, peerDuckDepth: s.peer.duckDepth, ducking: localDucked || s.peer.sourceDucked }); }, 200);
   api.info().then(result => { info = result; }).catch(() => {}); void devices().catch(() => {}); controls();

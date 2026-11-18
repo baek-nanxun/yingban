@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session, clipboard, shell, screen } = require('electron');
 const fs = require('node:fs');
+const { createHash, randomUUID } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const runFile = promisify(execFile);
@@ -7,6 +8,7 @@ const { join } = require('node:path');
 const { release } = require('node:os');
 const { WebSocket } = require('ws');
 const { createRoom, parseInvite, discoverRoom } = require('./room.cjs');
+const { isNewerVersion, parseInstallerURL, selectInstaller } = require('./update.cjs');
 
 function nativeHelperPath() {
   const bundled = join(__dirname, '../native/bin/YingBan.Audio.exe');
@@ -17,16 +19,17 @@ function nativeHelperPath() {
 // Invitees need routable adapter candidates, including a Tailscale adapter.
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-let window, settingsWindow, room, socket, capture, selectedSource, captureTask, grantedSource;
+let window, settingsWindow, miniWindow, room, socket, capture, selectedSource, captureTask, grantedSource;
 let pendingProtocolInvite;
+let miniState = { inRoom: false, voiceOnly: false, mic: false };
 let windowMode = 'connect';
-let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', outputDevice: '', inputMode: 'standard' };
+let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', outputDevice: '', inputMode: 'standard', displayName: '', avatarData: '' };
 let deviceList = [], runtimeStatus = {};
 function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion() }; }
 function sendSettings() {
   const snapshot = settingsSnapshot();
-  if (window && !window.isDestroyed()) window.webContents.send('settings:changed', snapshot);
-  if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('settings:changed', snapshot);
+  sendWindow(window, 'settings:changed', snapshot);
+  sendWindow(settingsWindow, 'settings:changed', snapshot);
 }
 function setWindowMode(mode) {
   if (!window || window.isDestroyed() || !['connect', 'session'].includes(mode) || mode === windowMode) return;
@@ -46,9 +49,26 @@ function openSettings() {
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
   settingsWindow.loadFile(join(__dirname, 'settings.html'));
-  settingsWindow.once('ready-to-show', () => settingsWindow?.show());
+  settingsWindow.once('ready-to-show', () => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.show(); });
   settingsWindow.on('closed', () => { settingsWindow = undefined; ui('settings:visible', false); });
   ui('settings:visible', true);
+}
+function showMiniIfNeeded() {
+  if (!window || window.isDestroyed() || !miniState.inRoom || !miniState.voiceOnly || !window.isMinimized()) { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.hide(); return; }
+  if (!miniWindow || miniWindow.isDestroyed()) {
+    miniWindow = new BrowserWindow({ width: 68, height: 68, frame: false, transparent: true, resizable: false, movable: true, alwaysOnTop: true, skipTaskbar: true, show: false, title: '映伴麦克风', icon: join(__dirname, 'icon.ico'), webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    miniWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    miniWindow.loadFile(join(__dirname, 'mini.html'));
+    miniWindow.webContents.once('did-finish-load', () => sendWindow(miniWindow, 'mini:state', miniState));
+    miniWindow.on('closed', () => { miniWindow = undefined; });
+    const workArea = screen.getPrimaryDisplay().workArea;
+    miniWindow.setPosition(workArea.x + workArea.width - 84, workArea.y + workArea.height - 84, false);
+  }
+  try {
+    if (miniWindow.isDestroyed()) return;
+    miniWindow.webContents.send('mini:state', miniState);
+    miniWindow.show(); miniWindow.setAlwaysOnTop(true, 'floating');
+  } catch { miniWindow = undefined; }
 }
 function isInviteUrl(value) { return typeof value === 'string' && /^(?:yingban|clearcall):\/\//i.test(value); }
 function isWebInviteUrl(value) {
@@ -94,7 +114,10 @@ async function ensureFirewallRules() {
     return { ready: false, missing, message: 'Windows 防火墙没有允许映伴接收局域网连接。请在防火墙提示中允许映伴，或执行使用说明中的两条管理员命令。' };
   }
 }
-const ui = (channel, data) => { if (window && !window.isDestroyed()) window.webContents.send(channel, data); };
+function sendWindow(windowRef, channel, data) {
+  try { if (windowRef && !windowRef.isDestroyed() && !windowRef.webContents.isDestroyed()) windowRef.webContents.send(channel, data); } catch {}
+}
+const ui = (channel, data) => sendWindow(window, channel, data);
 function stopCapture() {
   captureGeneration++;
   const current = capture;
@@ -134,9 +157,10 @@ async function connect(endpoint) {
 }
 function handle(name, fn) {
   ipcMain.handle(name, async (event, ...args) => {
-    const ownContents = [window?.webContents, settingsWindow?.webContents].filter(Boolean);
+    const ownContents = [window?.webContents, settingsWindow?.webContents, miniWindow?.webContents].filter(Boolean);
     if (!ownContents.includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Invalid sender');
-    if (event.sender !== window?.webContents && !['settings:get', 'settings:save', 'settings:close', 'app:info', 'updates:check', 'updates:open'].includes(name)) throw new Error('Invalid settings operation');
+    if (event.sender === miniWindow?.webContents && !['mini:action', 'mini:move'].includes(name)) throw new Error('Invalid mini operation');
+    if (event.sender === settingsWindow?.webContents && !['settings:get', 'settings:save', 'settings:close', 'app:info', 'updates:check', 'updates:download', 'updates:open'].includes(name)) throw new Error('Invalid settings operation');
     return fn(...args);
   });
 }
@@ -158,12 +182,17 @@ app.whenReady().then(() => {
       if (key === 'micDevice' && typeof value === 'string' && value.length < 1024) preferences[key] = value;
       if (key === 'outputDevice' && typeof value === 'string' && value.length < 1024) preferences[key] = value;
       if (key === 'inputMode' && ['standard', 'compatibility'].includes(value)) preferences[key] = value;
+      if (key === 'displayName' && typeof value === 'string') preferences[key] = value.trim().slice(0, 20);
+      if (key === 'avatarData' && typeof value === 'string' && (value === '' || (value.length <= 48000 && /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(value)))) preferences[key] = value;
     }
     if (process.env.CLEARCALL_TEST !== '1') fs.writeFileSync(join(app.getPath('userData'), 'preferences.json'), JSON.stringify(preferences));
     sendSettings(); return settingsSnapshot();
   });
-  handle('settings:devices', list => { deviceList = Array.isArray(list) ? list.slice(0, 40).map(d => ({ kind: String(d.kind), deviceId: String(d.deviceId), label: String(d.label) })) : []; if (settingsWindow) settingsWindow.webContents.send('settings:changed', settingsSnapshot()); });
-  handle('settings:status', status => { runtimeStatus = status; if (settingsWindow) settingsWindow.webContents.send('settings:runtime', status); });
+  handle('settings:devices', list => { deviceList = Array.isArray(list) ? list.slice(0, 40).map(d => ({ kind: String(d.kind), deviceId: String(d.deviceId), label: String(d.label) })) : []; sendWindow(settingsWindow, 'settings:changed', settingsSnapshot()); });
+  handle('settings:status', status => { runtimeStatus = status; sendWindow(settingsWindow, 'settings:runtime', status); });
+  handle('mini:state', state => { if (!state || typeof state !== 'object') return; miniState = { inRoom: Boolean(state.inRoom), voiceOnly: Boolean(state.voiceOnly), mic: Boolean(state.mic) }; sendWindow(miniWindow, 'mini:state', miniState); showMiniIfNeeded(); });
+  handle('mini:action', action => { if (action === 'toggle-mic') sendWindow(window, 'mini:command', action); });
+  handle('mini:move', point => { if (!miniWindow || miniWindow.isDestroyed() || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return; const area = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) }).workArea; const x = Math.max(area.x, Math.min(area.x + area.width - 68, Math.round(point.x))); const y = Math.max(area.y, Math.min(area.y + area.height - 68, Math.round(point.y))); miniWindow.setPosition(x, y, false); });
   const localPage = frame => Boolean(frame?.url.startsWith('file:'));
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => callback(contents === window?.webContents && localPage(contents.mainFrame) && ['media', 'display-capture', 'fullscreen'].includes(permission)));
   session.defaultSession.setPermissionCheckHandler((contents, permission) => contents === window?.webContents && localPage(contents.mainFrame) && ['media', 'display-capture', 'fullscreen'].includes(permission));
@@ -205,7 +234,7 @@ app.whenReady().then(() => {
   handle('window:mode', mode => { setWindowMode(mode); return mode; });
   handle('room:leave', leave);
   handle('signal:send', message => {
-    if (message && ['description', 'candidate', 'peer-state'].includes(message.type) && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (message && ['description', 'candidate', 'peer-state', 'profile'].includes(message.type) && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   });
   handle('sources:list', async () => {
     const sources = (await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: true })).filter(x => !x.name.startsWith('映伴')).map(x => ({ id: x.id, name: x.name, kind: x.id.startsWith('window:') ? 'app' : 'screen', thumbnail: x.thumbnail.toDataURL() }));
@@ -299,22 +328,48 @@ app.whenReady().then(() => {
     const current = `v${app.getVersion()}`;
     const headers = { accept: 'application/vnd.github+json', 'user-agent': 'YingBan' };
     try {
-      const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
+      const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers, signal: AbortSignal.timeout(6000) });
       if (response.ok) {
         const latest = await response.json();
-        return { available: latest.tag_name !== current, configured: true, tag: latest.tag_name, url: latest.html_url, assets: (latest.assets || []).map(asset => ({ name: asset.name, url: asset.browser_download_url })) };
+        const assets = (latest.assets || []).map(asset => ({ name: asset.name, url: asset.browser_download_url }));
+        const installer = assets.find(asset => /^YingBan-Setup-\d+\.\d+\.\d+\.exe$/i.test(asset.name));
+        return { available: isNewerVersion(latest.tag_name, current), configured: true, tag: latest.tag_name, url: latest.html_url, downloadURL: installer?.url, assets, testMode: process.env.CLEARCALL_TEST === '1' };
       }
     } catch {}
     // The public API is rate-limited on shared networks. The release page is
     // still available and redirects to the current tag without an API token.
-    const page = await fetch(`https://github.com/${repo}/releases/latest`, { headers: { 'user-agent': 'YingBan' }, redirect: 'follow' });
+    const page = await fetch(`https://github.com/${repo}/releases/latest`, { headers: { 'user-agent': 'YingBan' }, redirect: 'follow', signal: AbortSignal.timeout(6000) });
     if (!page.ok) throw new Error(`GitHub 返回 HTTP ${page.status}`);
     const match = page.url.match(/\/releases\/tag\/([^/?#]+)/);
     if (!match) return { available: false, configured: true, tag: current, url: `https://github.com/${repo}/releases` };
     const tag = decodeURIComponent(match[1]);
-    return { available: tag !== current, configured: true, tag, url: page.url, assets: [] };
+    return { available: isNewerVersion(tag, current), configured: true, tag, url: page.url, downloadURL: `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/YingBan-Setup-${tag.replace(/^v/i, '')}.exe`, assets: [], testMode: process.env.CLEARCALL_TEST === '1' };
   });
-  handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/releases\//.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
+  handle('updates:download', async info => {
+    const url = typeof info === 'string' ? info : info?.downloadURL;
+    const { version, manifestURL } = parseInstallerURL(url);
+    const manifestResponse = await fetch(manifestURL, { headers: { 'user-agent': 'YingBan' }, signal: AbortSignal.timeout(15000) });
+    if (!manifestResponse.ok) throw new Error('无法获取安装包校验信息。');
+    const manifest = await manifestResponse.json();
+    const expected = selectInstaller(manifest, version);
+    const response = await fetch(url, { headers: { 'user-agent': 'YingBan' }, redirect: 'follow' });
+    if (!response.ok) throw new Error(`下载安装包失败（HTTP ${response.status}）。`);
+    const total = expected.bytes; let received = 0; const hash = createHash('sha256');
+    if (!response.body) throw new Error('下载响应为空。');
+    const file = join(app.getPath('temp'), `YingBan-Setup-${randomUUID()}.exe`);
+    try {
+      const handle = await fs.promises.open(file, 'wx');
+      try {
+        for await (const chunk of response.body) { const data = Buffer.from(chunk); received += data.length; if (received > total) throw new Error('安装包大小不匹配。'); hash.update(data); await handle.writeFile(data); const progress = { received, total, percent: Math.round(received / total * 100) }; sendWindow(window, 'updates:progress', progress); sendWindow(settingsWindow, 'updates:progress', progress); }
+      } finally { await handle.close(); }
+      if (received !== total || hash.digest('hex').toLowerCase() !== expected.sha256.toLowerCase()) throw new Error('安装包校验失败，请手动下载。');
+      const installer = spawn(file, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true });
+      await new Promise((resolve, reject) => { installer.once('spawn', resolve); installer.once('error', reject); }); installer.unref();
+      setTimeout(() => app.quit(), 300);
+      return { started: true };
+    } catch (error) { await fs.promises.unlink(file).catch(() => {}); throw error; }
+  });
+  handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/(?:releases\/|releases\/download\/)/.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
   handle('app:info', () => ({ version: app.getVersion(), windows: release(), nativeAudio: Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
   if (process.platform === 'win32') {
     for (const scheme of ['yingban', 'clearcall']) {
@@ -332,7 +387,9 @@ app.whenReady().then(() => {
     pendingProtocolInvite = undefined;
     if (invite) ui('protocol:invite', invite);
   });
-  window.on('closed', () => { window = undefined; void leave(); });
+  window.on('closed', () => { window = undefined; if (miniWindow && !miniWindow.isDestroyed()) miniWindow.destroy(); void leave(); });
+  window.on('minimize', showMiniIfNeeded);
+  window.on('restore', () => { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.hide(); });
 });
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => { stopCapture(); if (socket) socket.terminate(); });
