@@ -18,7 +18,10 @@ ignored = {'node_modules', 'dist', 'test-results', '.git', '__pycache__'}
 with ZipFile(source_zip, 'w', ZIP_DEFLATED, compresslevel=6) as archive:
     for file in sorted(root.rglob('*')):
         rel = file.relative_to(root)
-        if file.is_file() and not any(part in ignored for part in rel.parts) and rel.parts[:2] != ('native', 'bin'):
+        # The release directory is normally inside the checkout. Exclude it
+        # so the source archive cannot include the portable archive currently
+        # being written and grow recursively until the runner runs out of disk.
+        if file.is_file() and not file.is_relative_to(output) and not any(part in ignored for part in rel.parts) and rel.parts[:2] != ('native', 'bin'):
             archive.write(file, Path('YingBan-source') / rel)
 artifacts = []
 for file in (app_zip, source_zip):

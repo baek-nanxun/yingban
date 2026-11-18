@@ -2,3 +2,4 @@ node_modules/
 dist/
 native/bin/
 test-results/
+release/
