@@ -34,7 +34,16 @@ async function open(name) {
     await host.page.locator('#muteMic').click(); await guest.page.locator('#muteMic').click();
     await Promise.all([host.page.waitForFunction(() => window.clearcallDiagnostics().remoteLevel > 0.01), guest.page.waitForFunction(() => window.clearcallDiagnostics().remoteLevel > 0.01)]);
     await host.page.locator('#shareScreen').click();
-    const source = host.page.locator('.source-item').first(); await source.waitFor();
+    const source = host.page.locator('.source-item').first();
+    try { await source.waitFor({ timeout: 15000 }); }
+    catch (error) {
+      console.error('Linux capture diagnostics:', await host.page.evaluate(async () => ({
+        notice: document.querySelector('#notice').textContent,
+        dialogOpen: document.querySelector('#sourceDialog').open,
+        sources: await window.clearcall.sources().then(items => items.map(({ id, name }) => ({ id, name }))).catch(e => ({ error: e.message }))
+      })));
+      throw error;
+    }
     assert.equal(await host.page.locator('#includeAudio').isDisabled(), true);
     await source.click();
     await host.page.locator('#confirmShare').click();
