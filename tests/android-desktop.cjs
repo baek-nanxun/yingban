@@ -32,7 +32,7 @@ async function waitForText(labels, timeout = 15000) {
   while (Date.now() < until) {
     const xml = await hierarchy(); last = xml;
     for (const label of labels) {
-      const node = xml.match(new RegExp(`text="${label}"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`));
+      const node = xml.match(new RegExp(`text="${label}"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i'));
       if (node) return node.slice(1).map(Number);
     }
     await pause(700);
