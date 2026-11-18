@@ -1,16 +1,19 @@
 const { _electron: electron } = require('playwright');
 const { join } = require('node:path');
-const { mkdirSync, writeFileSync } = require('node:fs');
+const { mkdirSync, writeFileSync, mkdtempSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const root = join(__dirname, '..'), out = join(root, 'test-results');
 mkdirSync(out, { recursive: true });
 const errors = [], apps = [];
+const profiles = mkdtempSync(join(tmpdir(), 'yingban-desktop-'));
+const assertSize = (actual, expected) => assert(actual.every((value, i) => Math.abs(value - expected[i]) <= 2), `Expected ${expected}, got ${actual}`);
 const toneFile = join(root, 'native/bin/TestTone.exe');
 execFileSync(join(process.env.WINDIR, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'), ['/nologo', '/platform:x64', '/out:' + toneFile, join(__dirname, 'NativeTone.cs')]);
 async function open(name) {
-  const app = await electron.launch({ args: [root, `--user-data-dir=${join(out, 'profile-' + name)}`], env: { ...process.env, CLEARCALL_TEST: '1', ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' } });
-  apps.push(app); const page = await app.firstWindow(); page.on('pageerror', e => errors.push(e.message));
+  const app = await electron.launch({ args: [root, `--user-data-dir=${join(profiles, name)}`], env: { ...process.env, CLEARCALL_TEST: '1', ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' } });
+  apps.push(app); const page = await app.firstWindow(); page.setDefaultTimeout(20000); page.on('pageerror', e => errors.push(e.message));
   await page.waitForFunction(() => window.clearcallDiagnostics);
   await page.evaluate(() => {
     window.testMicCalls = 0; window.testMicTracks = []; window.testNoMic = false;
@@ -47,7 +50,7 @@ async function fullscreen(client) {
   try {
     const a = await open('host');
     await a.page.screenshot({ path: join(out, 'ui-connect.png'), scale: 'css' });
-    assert.deepEqual(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize()), [800, 560]);
+    assertSize(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize()), [800, 560]);
     assert.equal(await a.page.locator('#stage').isVisible(), false);
     assert(await a.page.locator('#roomInput').evaluate(node => node.getBoundingClientRect().width >= 150));
     assert(await a.page.evaluate(() => document.documentElement.scrollHeight <= innerHeight && document.documentElement.scrollWidth <= innerWidth));
@@ -76,7 +79,8 @@ async function fullscreen(client) {
     const mini = await miniEvent; await mini.waitForURL('**/mini.html');
     assert.equal(await mini.locator('#mic').getAttribute('aria-label'), '开启麦克风');
     assert(await mini.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight));
-    assert.deepEqual(await mini.evaluate(() => [innerWidth, innerHeight]), [68, 68]);
+    // Windows may round the 68-DIP transparent window at fractional DPI scaling.
+    assert((await mini.evaluate(() => [innerWidth, innerHeight])).every(size => Math.abs(size - 68) <= 2));
     await mini.screenshot({ path: join(out, 'ui-mini-mic.png'), scale: 'css' });
     const beforeDrag = await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴麦克风').getPosition());
     await mini.mouse.move(34, 34); await mini.mouse.down(); await mini.mouse.move(12, 12, { steps: 5 }); await mini.mouse.up();
@@ -96,8 +100,8 @@ async function fullscreen(client) {
     await settings.waitForURL('**/settings.html');
     await settings.waitForFunction(() => document.getElementById('versionLabel').textContent.includes('YingBan'));
     await settings.screenshot({ path: join(out, 'ui-settings-audio.png'), scale: 'css' });
-    assert.deepEqual(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴设置').getSize()), [760, 640]);
-    assert.deepEqual(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴').getSize()), [1280, 820]);
+    assertSize(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴设置').getSize()), [760, 640]);
+    assertSize(await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴').getSize()), [1280, 820]);
     await settings.locator('[data-tab="profile"]').click();
     await settings.locator('#displayName').fill('小南');
     await settings.locator('#avatarFile').setInputFiles(join(out, 'ui-mini-mic.png'));
@@ -120,7 +124,9 @@ async function fullscreen(client) {
     await a.page.waitForFunction(() => document.getElementById('duckDepth').value === '15');
     await a.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === '映伴设置')?.close());
     await a.page.screenshot({ path: join(out, 'ui-session.png'), scale: 'css' });
-    const fixture = await electron.launch({ args: [join(__dirname, 'fixture.cjs'), `--tone=${toneFile}`, `--user-data-dir=${join(out, 'fixture-profile')}`] }); apps.push(fixture); await fixture.firstWindow();
+    const displays = await a.app.evaluate(({ screen }) => screen.getAllDisplays().map(d => ({ width: d.size.width * d.scaleFactor, height: d.size.height * d.scaleFactor })));
+    assert(displays.some(d => d.width >= 3840 && d.height >= 2160), `4K desktop regression requires a physical 4K display; available: ${JSON.stringify(displays)}`);
+    const fixture = await electron.launch({ args: [join(__dirname, 'fixture.cjs'), `--tone=${toneFile}`, `--user-data-dir=${join(profiles, 'fixture')}`] }); apps.push(fixture); await fixture.firstWindow();
     await share(a.page);
     await b.page.waitForFunction(() => window.clearcallDiagnostics().screen.width >= 3840 && window.clearcallDiagnostics().screen.height >= 2150, null, { timeout: 25000 });
     await b.page.locator('#pictureInPicture').click();
@@ -174,6 +180,6 @@ async function fullscreen(client) {
     writeFileSync(join(out,'desktop-results.json'),JSON.stringify({ passed:true,diagnostics,checks:['no-mic startup','optional mic failure','mic release','4K','application scope','screen scope','fullscreen both directions','source-only ducking'] },null,2));
     console.log('PASS: full-screen audio scope, 1080p, disconnect and resource cleanup.');
   } catch(e) {
-    console.error(e); for (const app of apps) { try { const p = await app.firstWindow(); console.error(await p.locator('#notice').innerText({timeout:500}), await p.evaluate(() => window.clearcallDiagnostics())); } catch {} } process.exitCode = 1;
-  } finally { for (const app of apps.reverse()) await app.close().catch(() => {}); }
+    console.error(e); for (const app of apps) { try { const p = app.windows()[0]; if (p) console.error(await p.locator('#notice').innerText({timeout:500}), await p.evaluate(() => window.clearcallDiagnostics())); } catch {} } process.exitCode = 1;
+  } finally { for (const app of apps.reverse()) await app.close().catch(() => {}); rmSync(profiles, { recursive: true, force: true, maxRetries: 5 }); }
 })().catch(e => { console.error(e); process.exitCode=1; });

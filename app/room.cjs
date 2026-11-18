@@ -55,7 +55,13 @@ async function createRoom({ port = 43127, host = '0.0.0.0', token = randomBytes(
   await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
   const discovery = dgram.createSocket('udp4');
   if (discoveryPort) {
-    await new Promise((resolve, reject) => { discovery.once('error', reject); discovery.bind(discoveryPort, '0.0.0.0', resolve); });
+    try {
+      await new Promise((resolve, reject) => { discovery.once('error', reject); discovery.bind(discoveryPort, '0.0.0.0', resolve); });
+    } catch (error) {
+      try { discovery.close(); } catch {}
+      await new Promise(resolve => server.close(resolve));
+      throw error;
+    }
     discovery.on('message', (message, info) => {
       const [, requested] = message.toString().split('|');
       if (message.toString().startsWith('YINGBAN_DISCOVER|') && requested === roomId) {

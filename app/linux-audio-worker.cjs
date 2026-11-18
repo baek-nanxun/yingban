@@ -123,13 +123,13 @@ async function restoreSaved() {
   try { inputs = JSON.parse(await pactl('--format=json', 'list', 'sink-inputs')); }
   catch { return; }
   if (!Array.isArray(inputs)) return;
-  for (const previous of saved.values()) {
+  await Promise.allSettled([...saved.values()].map(async previous => {
     const input = inputs.find(item => Number(item.index) === previous.index && String(item.properties?.['application.process.id']) === String(previous.pid));
-    if (!input || processInfo(previous.pid)?.started !== previous.started) continue;
+    if (!input || processInfo(previous.pid)?.started !== previous.started) return;
     const volume = Object.values(input.volume || {}).map(channel => Number(channel.value));
-    if (!volume.length || volume.some(value => !Number.isSafeInteger(value) || value < 0)) continue;
+    if (!volume.length || volume.some(value => !Number.isSafeInteger(value) || value < 0)) return;
     try { await restoreOne({ index: previous.index, volume }, previous); } catch {}
-  }
+  }));
   saved.clear();
 }
 function stop(code = 0) {

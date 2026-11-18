@@ -15,7 +15,7 @@ async function until(fn, description, timeout = 12000) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 function wave(name, frequency) {
-  const frames = 48000 * 30, data = Buffer.alloc(44 + frames * 4);
+  const frames = 48000 * 120, data = Buffer.alloc(44 + frames * 4);
   data.write('RIFF', 0); data.writeUInt32LE(data.length - 8, 4); data.write('WAVEfmt ', 8); data.writeUInt32LE(16, 16);
   data.writeUInt16LE(1, 20); data.writeUInt16LE(2, 22); data.writeUInt32LE(48000, 24); data.writeUInt32LE(192000, 28);
   data.writeUInt16LE(4, 32); data.writeUInt16LE(16, 34); data.write('data', 36); data.writeUInt32LE(frames * 4, 40);
@@ -69,6 +69,12 @@ async function stopped(child) { if (child.exitCode !== null || child.signalCode 
     assert(ratio > 0.08 && ratio < 0.3, `unexpected transmitted duck ratio ${ratio}`);
     const local = (await listStreams(owner.pid)).find(item => item.name === 'YBVideo');
     assert(local.volume[0] < 50000, 'local video did not duck');
+    single.child.stdin.write('DUCK 1\n');
+    await until(async () => Math.abs((await listStreams(owner.pid)).find(item => item.name === 'YBVideo').volume[0] - 65536) <= 2, 'silence to restore source volume');
+    const released = await measure(single);
+    assert(amplitude(released, 440) > before * 0.8, 'transmitted audio did not recover after speech');
+    single.child.stdin.write('DUCK 0.17783\n');
+    await until(async () => (await listStreams(owner.pid)).find(item => item.name === 'YBVideo').volume[0] < 50000, 'duck before stopping');
     single.child.stdin.end('\n'); await stopped(single.child);
     const restored = (await listStreams(owner.pid)).find(item => item.name === 'YBVideo');
     assert(Math.abs(restored.volume[0] - 65536) <= 2, 'local video volume was not restored');
@@ -83,8 +89,17 @@ async function stopped(child) { if (child.exitCode !== null || child.signalCode 
     const mixed = await measure(screen), first = amplitude(mixed, 440), second = amplitude(mixed, 700);
     assert(first > 0.025 && second > 0.025, `screen audio did not include both applications (${first}, ${second})`);
     assert(amplitude(mixed, 1000) < Math.min(first, second) * 0.1, 'call playback leaked into screen capture');
-    screen.child.stdin.end('\n'); await stopped(screen.child);
-    console.log('PASS: PipeWire per-application capture, call exclusion, dynamic screen mixing, source ducking and volume restoration.');
+    screen.child.stdin.write('DUCK 0.2\n');
+    await until(() => screen.log().includes('DUCKED 0.2'), 'screen duck');
+    const active = await listStreams(owner.pid);
+    assert(active.filter(item => /^YBVideo/.test(item.name)).every(item => item.volume[0] < 51000));
+    // A manual volume choice becomes the new baseline; stopping must retain it.
+    execFileSync('pactl', ['set-sink-input-volume', String(stream.index), '54000']);
+    await until(async () => (await listStreams(owner.pid)).find(item => item.name === 'YBVideo').volume[0] < 40000, 'manual volume baseline to be ducked');
+    screen.child.kill('SIGTERM'); await stopped(screen.child);
+    const final = await listStreams(owner.pid);
+    assert(Math.abs(final.find(item => item.name === 'YBVideo').volume[0] - 54000) <= 2, 'manual volume was overwritten on shutdown');
+    console.log('PASS: PipeWire per-application capture, call exclusion, dynamic screen mixing, speech release, screen ducking and restoration after stdin close/SIGTERM.');
   } finally {
     for (const child of children.reverse()) if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     rmSync(temp, { recursive: true, force: true });

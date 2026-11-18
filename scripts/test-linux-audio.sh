@@ -8,7 +8,12 @@ fi
 # Never connect to or modify the user's running audio server.
 runtime="$(mktemp -d "${TMPDIR:-/tmp}/yingban-pipewire.XXXXXX")"
 export XDG_RUNTIME_DIR="$runtime"
-unset PULSE_SERVER PULSE_SINK PULSE_SOURCE PIPEWIRE_REMOTE
+export XDG_STATE_HOME="$runtime/state"
+export PULSE_SERVER="unix:$runtime/pulse/native"
+export PIPEWIRE_REMOTE=pipewire-0
+export PULSE_CLIENTCONFIG="$runtime/client.conf"
+printf 'autospawn = no\n' >"$PULSE_CLIENTCONFIG"
+unset PULSE_SINK PULSE_SOURCE
 pipewire >"$runtime/pipewire.log" 2>&1 & pw_pid=$!
 pipewire-pulse >"$runtime/pulse.log" 2>&1 & pulse_pid=$!
 wireplumber >"$runtime/wireplumber.log" 2>&1 & wp_pid=$!

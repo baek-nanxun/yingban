@@ -9,6 +9,7 @@ const { release } = require('node:os');
 const { WebSocket } = require('ws');
 const { createRoom, parseInvite, discoverRoom } = require('./room.cjs');
 const { isNewerVersion, parseInstallerURL, selectInstaller } = require('./update.cjs');
+const { stopCaptureProcess } = require('./capture-stop.cjs');
 const isWindows = process.platform === 'win32';
 const isLinux = process.platform === 'linux';
 const isWayland = isLinux && process.env.XDG_SESSION_TYPE === 'wayland';
@@ -102,6 +103,8 @@ if (!singleInstanceLock) app.quit();
 app.on('second-instance', (_event, argv) => queueProtocolInvite(protocolArgument(argv)));
 app.on('open-url', (event, value) => { event.preventDefault(); queueProtocolInvite(value); });
 let captureGeneration = 0;
+let captureStopping = Promise.resolve();
+let quittingAfterCapture = false;
 async function ensureFirewallRules() {
   if (!isWindows || process.env.CLEARCALL_TEST === '1') return { skipped: true };
   const rules = [
@@ -133,14 +136,11 @@ function stopCapture() {
   const current = capture;
   capture = undefined;
   captureTask = undefined;
-  if (!current) return;
-  current.stdin.end('\n');
-  const timer = setTimeout(() => { if (current.exitCode === null) current.kill(); }, isLinux ? 6000 : 1000);
-  timer.unref();
-  current.once('exit', () => clearTimeout(timer));
+  if (current) captureStopping = Promise.all([captureStopping, stopCaptureProcess(current, isLinux ? 10000 : 1000)]).then(() => {});
+  return captureStopping;
 }
 async function leave() {
-  stopCapture();
+  await stopCapture();
   selectedSource = grantedSource = undefined;
   const current = socket;
   socket = undefined;
@@ -291,7 +291,10 @@ app.whenReady().then(() => {
     await linuxAudio.verifyTools();
     return linuxAudio.applications(await linuxAudio.listStreams(process.pid));
   });
-  handle('audio:start', appKey => {
+  handle('audio:start', async appKey => {
+    const requestedGeneration = captureGeneration;
+    await captureStopping;
+    if (requestedGeneration !== captureGeneration) throw new Error('共享已取消。');
     if (!isWindows && !isLinux) throw new Error('当前系统不支持共享应用声音。');
     if (captureTask) return captureTask;
     const source = grantedSource;
@@ -373,7 +376,7 @@ app.whenReady().then(() => {
     })().catch(error => { if (generation === captureGeneration) captureTask = undefined; throw error; });
     return captureTask;
   });
-  handle('audio:stop', () => { stopCapture(); return true; });
+  handle('audio:stop', async () => { await stopCapture(); return true; });
   handle('audio:duck', gain => {
     if (typeof gain !== 'number' || !Number.isFinite(gain) || gain < 0.05 || gain > 1) throw new Error('Invalid volume');
     if (capture && capture.stdin.writable) capture.stdin.write(`DUCK ${gain.toFixed(5)}\n`);
@@ -449,4 +452,9 @@ app.whenReady().then(() => {
   window.on('restore', () => { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.hide(); });
 });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { stopCapture(); if (socket) socket.terminate(); });
+app.on('before-quit', event => {
+  if (quittingAfterCapture) return;
+  event.preventDefault();
+  if (socket) socket.terminate();
+  void stopCapture().then(() => { quittingAfterCapture = true; app.quit(); });
+});
