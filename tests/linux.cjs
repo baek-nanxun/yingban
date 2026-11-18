@@ -55,6 +55,17 @@ async function open(name) {
     assert.equal((await host.page.evaluate(() => window.clearcallDiagnostics())).computerAudio, false);
     assert.deepEqual(errors, []);
     console.log('PASS: Linux room discovery, bidirectional synthetic microphones and screen capture.');
+    const packaged = await electron.launch({
+      executablePath: join(root, 'dist-linux', 'linux-unpacked', 'yingban'),
+      args: ['--no-sandbox', `--user-data-dir=${join(temp, 'packaged')}`],
+      env: { ...process.env, CLEARCALL_TEST: '1' }
+    });
+    apps.push(packaged);
+    const packagedPage = await packaged.firstWindow();
+    await packagedPage.waitForFunction(() => window.clearcallDiagnostics);
+    const info = await packagedPage.evaluate(() => window.clearcall.info());
+    assert.equal(info.platform, 'linux'); assert.equal(info.nativeAudio, false);
+    console.log('PASS: packaged Linux application starts with the expected platform capabilities.');
   } finally {
     for (const app of apps) await app.close().catch(() => {});
     rmSync(temp, { recursive: true, force: true });
