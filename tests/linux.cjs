@@ -34,8 +34,9 @@ async function open(name) {
     await host.page.locator('#muteMic').click(); await guest.page.locator('#muteMic').click();
     await Promise.all([host.page.waitForFunction(() => window.clearcallDiagnostics().remoteLevel > 0.01), guest.page.waitForFunction(() => window.clearcallDiagnostics().remoteLevel > 0.01)]);
     await host.page.locator('#shareScreen').click();
+    const source = host.page.locator('.source-item').first(); await source.waitFor();
     assert.equal(await host.page.locator('#includeAudio').isDisabled(), true);
-    const source = host.page.locator('.source-item').first(); await source.waitFor(); await source.click();
+    await source.click();
     await host.page.locator('#confirmShare').click();
     await guest.page.waitForFunction(() => window.clearcallDiagnostics().peerSharing && document.querySelector('#screenVideo').videoWidth > 0, null, { timeout: 30000 });
     assert.equal((await host.page.evaluate(() => window.clearcallDiagnostics())).computerAudio, false);
