@@ -10,7 +10,7 @@
     $('remoteVoice').textContent = !runtime.connected ? '未连接' : runtime.remoteMuted ? '未开麦' : runtime.remoteSpeaking ? '说话中' : '安静';
     const receivingOnly = runtime.peerSharing && !runtime.sharing;
     $('duckEnabled').disabled = $('duckDepth').disabled = Boolean(receivingOnly);
-    if (receivingOnly) { $('duckEnabled').checked = runtime.peerDuckEnabled !== false; $('duckDepth').value = runtime.peerDuckDepth || 15; }
+    if (receivingOnly) { $('duckEnabled').checked = runtime.peerDuckEnabled !== false; $('duckDepth').value = runtime.peerDuckDepth || 9; }
     else if (snapshot) { $('duckEnabled').checked = snapshot.preferences.duckEnabled; $('duckDepth').value = snapshot.preferences.duckDepth; }
     $('duckDescription').textContent = receivingOnly ? '此房间由共享者控制人声优先。' : '任意一方说话时降低共享内容的声音。';
     $('duckStatus').textContent = runtime.ducking ? '共享端正在降低背景音' : runtime.sharing || runtime.peerSharing ? '背景音正常' : '';

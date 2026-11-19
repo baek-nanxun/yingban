@@ -2,11 +2,11 @@
   'use strict';
   const api = window.clearcall;
   const $ = id => document.getElementById(id);
-  const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 15, peerJoined: false, peerName: '', peerAvatar: '', peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
+  const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 9, peerJoined: false, peerName: '', peerAvatar: '', peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
   let ctx, master, sharedMaster, silence, outputGain, micStream, micMonitor, pc, tx, localVideo, remoteVideo;
   let outgoingSystem, pcmNode, pcmDestination, remoteMic, remoteSystem;
   let moduleReady, selectedSource, selectedSourceKind, audioAppsGeneration = 0, lastTarget = -1, info = {};
-  let lastLocalTarget = 1;
+  let localGain = 1, localGainTarget = 1, lastLocalTarget = 1, lastGainTime = performance.now();
   let localDucked = false;
   let audioScope, micGeneration = 0;
   let roomId = '', inputMode = 'standard', outputDevice = '', toastTimer, audioInitialization, settingsVisible = false;
@@ -140,7 +140,7 @@
     const receivingOnly = s.peer.sharing && !localVideo;
     $('duckEnabled').disabled = $('duckDepth').disabled = receivingOnly;
     $('duckEnabled').checked = receivingOnly ? s.peer.duckEnabled !== false : s.duckEnabled;
-    $('duckDepth').value = receivingOnly ? (s.peer.duckDepth || 15) : s.duckDepth;
+    $('duckDepth').value = receivingOnly ? (s.peer.duckDepth || 9) : s.duckDepth;
     $('duckDepthLabel').textContent = `${$('duckDepth').value} dB`;
     $('duckDescription').textContent = receivingOnly ? '视频音量由共享端统一控制。你说话时，对方会降低视频声音，两边一起变小。' : '任意一方说话时，在共享端降低视频声音。观看端跟随变化，不会再次自动压低。';
     void api.setMiniState({ inRoom: s.inRoom, voiceOnly: s.inRoom && !localVideo && !s.peer.sharing, mic: Boolean(micStream) });
@@ -279,7 +279,7 @@
       } else if (message.type === 'candidate' && s.inRoom) {
         if (pc?.remoteDescription) await pc.addIceCandidate(message.candidate); else s.candidates.push(message.candidate);
       } else if (message.type === 'peer-state') {
-        s.peer = { sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(6, Math.min(24, message.duckDepth)) : 15 }; controls(); refreshVideo();
+        s.peer = { sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(4, Math.min(18, message.duckDepth)) : 9 }; controls(); refreshVideo();
       } else if (message.type === 'profile') {
         s.peerName = typeof message.displayName === 'string' ? message.displayName.trim().slice(0, 20) : '';
         s.peerAvatar = typeof message.avatarData === 'string' && message.avatarData.length <= 48000 && /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(message.avatarData) ? message.avatarData : '';
@@ -330,7 +330,7 @@
     previous?.getTracks().forEach(t => { t.onended = null; t.stop(); });
     outgoingSystem?.getTracks().forEach(t => t.stop()); outgoingSystem = undefined;
     pcmNode?.disconnect(); pcmDestination?.disconnect(); pcmNode = pcmDestination = undefined;
-    await api.stopAudio(); lastLocalTarget = 1; localDucked = false; await peerState(); controls(); refreshVideo();
+    await api.stopAudio(); localGain = localGainTarget = lastLocalTarget = 1; lastGainTime = performance.now(); localDucked = false; await peerState(); controls(); refreshVideo();
   }
   async function endCall() {
     s.inRoom = false; s.peerJoined = false; s.peerName = s.peerAvatar = ''; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
@@ -445,8 +445,13 @@
     setText('localVoice', !micStream ? '未开启' : localSpeaking ? '说话中' : '安静');
     setText('remoteVoice', !pc ? '未连接' : s.peer.muted ? '未开麦' : remoteSpeaking ? '说话中' : '安静');
     const duck = s.duckEnabled && (localSpeaking || remoteSpeaking);
-    const localTarget = localVideo && outgoingSystem && duck ? window.sharedGain(1, true, s.duckDepth) : 1;
-    if (Math.abs(localTarget - lastLocalTarget) > 0.0001) { lastLocalTarget = localTarget; void api.duckLocal(localTarget).catch(error => notify(`本机视频降音量失败：${error.message}`, 'error')); }
+    localGainTarget = localVideo && outgoingSystem && duck ? window.sharedGain(1, true, s.duckDepth) : 1;
+    const elapsed = Math.max(0, now - lastGainTime); lastGainTime = now;
+    localGain = window.rampGain(localGain, localGainTarget, elapsed);
+    if (Math.abs(localGain - lastLocalTarget) > 0.002 || Math.abs(localGainTarget - lastLocalTarget) > 0.002) {
+      lastLocalTarget = localGain;
+      void api.duckLocal(localGain).catch(error => notify(`本机视频降音量失败：${error.message}`, 'error'));
+    }
     // All automatic attenuation happens at the sharing source. A receiver only
     // applies its personal listening-volume slider, never a second speech duck.
     const target = Number($('sharedVolume').value) / 100;

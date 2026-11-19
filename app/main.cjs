@@ -34,7 +34,7 @@ let window, settingsWindow, miniWindow, room, socket, capture, selectedSource, c
 let pendingProtocolInvite;
 let miniState = { inRoom: false, voiceOnly: false, mic: false };
 let windowMode = 'connect';
-let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', outputDevice: '', inputMode: 'standard', displayName: '', avatarData: '' };
+let preferences = { duckEnabled: true, duckDepth: 9, sharedVolume: 80, sensitivity: 34, micDevice: '', outputDevice: '', inputMode: 'standard', displayName: '', avatarData: '' };
 let deviceList = [], runtimeStatus = {};
 function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion(), platform: process.platform, nativeAudio: supportsAudio() }; }
 function sendSettings() {
@@ -177,7 +177,16 @@ function handle(name, fn) {
 app.whenReady().then(() => {
   if (!singleInstanceLock) return;
   if (process.env.CLEARCALL_TEST !== '1') {
-    try { const saved = JSON.parse(fs.readFileSync(join(app.getPath('userData'), 'preferences.json'), 'utf8')); for (const key of Object.keys(preferences)) if (typeof saved[key] === typeof preferences[key]) preferences[key] = saved[key]; } catch {}
+    try {
+      const saved = JSON.parse(fs.readFileSync(join(app.getPath('userData'), 'preferences.json'), 'utf8'));
+      for (const key of Object.keys(preferences)) if (typeof saved[key] === typeof preferences[key]) preferences[key] = saved[key];
+      // 1.0.3's defaults were 15 dB / -42 dB. Move untouched defaults to the
+      // gentler curve; explicitly changed settings remain unchanged.
+      if (saved.duckDepth === 15 && saved.sensitivity === 42) {
+        preferences.duckDepth = 9; preferences.sensitivity = 34;
+        fs.writeFileSync(join(app.getPath('userData'), 'preferences.json'), JSON.stringify(preferences));
+      }
+    } catch {}
   }
   handle('settings:get', settingsSnapshot);
   handle('settings:open', openSettings);
@@ -186,7 +195,7 @@ app.whenReady().then(() => {
     if (!patch || typeof patch !== 'object') throw new Error('Invalid settings');
     for (const [key, value] of Object.entries(patch)) {
       if (key === 'duckEnabled' && typeof value === 'boolean') preferences[key] = value;
-      if (key === 'duckDepth' && Number.isFinite(value)) preferences[key] = Math.max(6, Math.min(24, value));
+      if (key === 'duckDepth' && Number.isFinite(value)) preferences[key] = Math.max(4, Math.min(18, value));
       if (key === 'sharedVolume' && Number.isFinite(value)) preferences[key] = Math.max(0, Math.min(100, value));
       if (key === 'sensitivity' && Number.isFinite(value)) preferences[key] = Math.max(25, Math.min(60, value));
       if (key === 'micDevice' && typeof value === 'string' && value.length < 1024) preferences[key] = value;
