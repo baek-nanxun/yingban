@@ -85,11 +85,11 @@ function isInviteUrl(value) { return typeof value === 'string' && /^(?:yingban|c
 function isWebInviteUrl(value) {
   try {
     const url = new URL(value);
-    return url.origin === 'https://baek-nanxun.github.io' && url.pathname === '/yingban-windows/join/' && isInviteUrl(decodeURIComponent(url.searchParams.get('target') || ''));
+    return url.origin === 'https://baek-nanxun.github.io' && url.pathname === '/yingban/join/' && isInviteUrl(decodeURIComponent(url.searchParams.get('target') || ''));
   } catch { return false; }
 }
 function isInviteClipboardText(value) {
-  const match = String(value).match(/https:\/\/baek-nanxun\.github\.io\/yingban-windows\/join\/\?target=[^\s]+/);
+  const match = String(value).match(/https:\/\/baek-nanxun\.github\.io\/yingban\/join\/\?target=[^\s]+/);
   return Boolean(match && isWebInviteUrl(match[0]));
 }
 function protocolArgument(argv) { return argv.find(value => isInviteUrl(value)); }
@@ -392,8 +392,8 @@ app.whenReady().then(() => {
   });
   handle('clipboard:copy', text => { if (typeof text === 'string' && text.length < 1200 && (/^\d{6}$/.test(text) || (/^(?:yingban|clearcall):\/\//.test(text) && text.length < 300) || isWebInviteUrl(text) || isInviteClipboardText(text))) clipboard.writeText(text); });
   handle('updates:check', async () => {
-    const repo = process.env.YINGBAN_GITHUB_REPO || 'baek-nanxun/yingban-windows';
-    if (!/^[^/]+\/yingban-windows$/.test(repo)) return { available: false, configured: false, message: 'GitHub 更新地址尚未配置。' };
+    const repo = process.env.YINGBAN_GITHUB_REPO || 'baek-nanxun/yingban';
+    if (!/^[^/]+\/yingban$/.test(repo)) return { available: false, configured: false, message: 'GitHub 更新地址尚未配置。' };
     const current = `v${app.getVersion()}`;
     const headers = { accept: 'application/vnd.github+json', 'user-agent': 'YingBan' };
     try {
@@ -438,7 +438,7 @@ app.whenReady().then(() => {
       return { started: true };
     } catch (error) { await fs.promises.unlink(file).catch(() => {}); throw error; }
   });
-  handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/(?:releases\/|releases\/download\/)/.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
+  handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban\/(?:releases\/|releases\/download\/)/.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
   handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, systemRelease: release(), windows: isWindows ? release() : undefined, nativeAudio: supportsAudio(), testMode: process.env.CLEARCALL_TEST === '1' }));
   if (process.env.CLEARCALL_TEST !== '1' && (isWindows || isLinux)) {
     for (const scheme of ['yingban', 'clearcall']) {

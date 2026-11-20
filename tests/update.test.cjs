@@ -10,8 +10,8 @@ test('update checks never offer an older or invalid release', () => {
 });
 
 test('automatic update only accepts matching release assets from the project repository', () => {
-  const url = 'https://github.com/baek-nanxun/yingban-windows/releases/download/v1.2.3/YingBan-Setup-1.2.3.exe';
-  assert.deepEqual(parseInstallerURL(url), { version: '1.2.3', manifestURL: 'https://github.com/baek-nanxun/yingban-windows/releases/download/v1.2.3/checksums.json' });
+  const url = 'https://github.com/baek-nanxun/yingban/releases/download/v1.2.3/YingBan-Setup-1.2.3.exe';
+  assert.deepEqual(parseInstallerURL(url), { version: '1.2.3', manifestURL: 'https://github.com/baek-nanxun/yingban/releases/download/v1.2.3/checksums.json' });
   for (const invalid of [url.replace('baek-nanxun', 'someone'), url.replace('Setup-1.2.3', 'Setup-1.2.4'), url.replace('https:', 'http:')]) assert.throws(() => parseInstallerURL(invalid));
 });
 test('automatic update requires a bounded installer size and SHA-256 in the release manifest', () => {

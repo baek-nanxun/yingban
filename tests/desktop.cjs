@@ -58,7 +58,7 @@ async function fullscreen(client) {
     await a.page.waitForFunction(() => window.clearcallDiagnostics().inRoom && document.getElementById('inviteSelect').options.length);
     await a.page.locator('#copyInvite').click();
     const copiedInvite = await a.app.evaluate(({ clipboard }) => clipboard.readText());
-    assert.match(copiedInvite, /https:\/\/baek-nanxun\.github\.io\/yingban-windows\/join\/\?target=/);
+    assert.match(copiedInvite, /https:\/\/baek-nanxun\.github\.io\/yingban\/join\/\?target=/);
     assert.match(copiedInvite, /房间号：\d{6}/);
     assert.equal(await a.page.evaluate(() => window.testMicCalls), 0);
     assert.equal((await a.page.evaluate(() => window.clearcallDiagnostics())).context, undefined);

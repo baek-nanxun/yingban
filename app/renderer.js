@@ -511,7 +511,7 @@
   $('copyInvite').addEventListener('click', async () => {
     if (!$('inviteSelect').value) return;
     const target = $('inviteSelect').value;
-    const link = `https://baek-nanxun.github.io/yingban-windows/join/?target=${encodeURIComponent(target)}`;
+    const link = `https://baek-nanxun.github.io/yingban/join/?target=${encodeURIComponent(target)}`;
     await api.copy(`加入映伴通话\n点击链接：${link}\n房间号：${roomId}\n两台电脑需在同一局域网或同一 Tailscale 网络。`);
     notify('邀请信息已复制，包含链接和房间号', 'success');
   });

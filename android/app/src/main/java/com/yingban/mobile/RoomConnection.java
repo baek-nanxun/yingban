@@ -58,7 +58,7 @@ final class RoomConnection {
 
     static URI endpoint(String input) throws Exception {
         String text = input.trim();
-        int start = text.indexOf("https://baek-nanxun.github.io/yingban-windows/join/?target=");
+        int start = text.indexOf("https://baek-nanxun.github.io/yingban/join/?target=");
         if (start >= 0) {
             String url = text.substring(start).split("\\s", 2)[0];
             Uri uri = Uri.parse(url);

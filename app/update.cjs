@@ -9,7 +9,7 @@ function isNewerVersion(tag, current) {
 }
 
 function parseInstallerURL(url) {
-  const match = typeof url === 'string' && /^https:\/\/github\.com\/baek-nanxun\/yingban-windows\/releases\/download\/v(\d+\.\d+\.\d+)\/YingBan-Setup-(\d+\.\d+\.\d+)\.exe$/i.exec(url);
+  const match = typeof url === 'string' && /^https:\/\/github\.com\/baek-nanxun\/yingban\/releases\/download\/v(\d+\.\d+\.\d+)\/YingBan-Setup-(\d+\.\d+\.\d+)\.exe$/i.exec(url);
   if (!match || match[1] !== match[2]) throw new Error('安装包地址无效。');
   return { version: match[1], manifestURL: url.replace(/YingBan-Setup-\d+\.\d+\.\d+\.exe$/i, 'checksums.json') };
 }

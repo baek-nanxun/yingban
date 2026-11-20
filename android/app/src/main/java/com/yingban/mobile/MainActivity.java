@@ -291,7 +291,7 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     }
     private void copyInvite() {
         if (room.invite.isEmpty()) { toast("请让创建房间的一方复制邀请"); return; }
-        String web = "https://baek-nanxun.github.io/yingban-windows/join/?target=" + Uri.encode(room.invite);
+        String web = "https://baek-nanxun.github.io/yingban/join/?target=" + Uri.encode(room.invite);
         ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("映伴邀请", "映伴房间号：" + room.code + "\n加入链接：" + web));
         toast("房间号和邀请链接已复制");
     }

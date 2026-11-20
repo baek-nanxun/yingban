@@ -1,13 +1,13 @@
 {
   "name": "yingban-windows",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "description": "映伴 · Windows 双人屏幕共享与人声优先原型",
   "repository": {
     "type": "git",
-    "url": "https://github.com/baek-nanxun/yingban-windows.git"
+    "url": "https://github.com/baek-nanxun/yingban.git"
   },
-  "homepage": "https://github.com/baek-nanxun/yingban-windows/releases",
+  "homepage": "https://github.com/baek-nanxun/yingban/releases",
   "main": "app/main.cjs",
   "scripts": {
     "build:native": "node scripts/build-native.cjs",
