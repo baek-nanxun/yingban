@@ -2,7 +2,6 @@ package com.yingban.mobile;
 
 import android.content.Context;
 import android.content.Intent;
-import android.media.AudioManager;
 import android.media.projection.MediaProjection;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,8 +28,6 @@ final class RtcSession {
     private final EglBase egl;
     private final PeerConnectionFactory factory;
     private final JavaAudioDeviceModule audioDevice;
-    private final AudioManager audioManager;
-    private final int previousAudioMode;
     private PeerConnection peer;
     private RtpTransceiver micSlot, audioSlot, videoSlot;
     private AudioSource micSource;
@@ -50,12 +47,11 @@ final class RtcSession {
             if (!initialized) { PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(this.context).createInitializationOptions()); initialized = true; }
         }
         egl = EglBase.create();
-        audioManager = (AudioManager) this.context.getSystemService(Context.AUDIO_SERVICE);
-        previousAudioMode = audioManager == null ? AudioManager.MODE_NORMAL : audioManager.getMode();
-        if (audioManager != null) audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-        // Some devices' hardware AEC adds a delayed second path. WebRTC's AEC3
-        // is more consistent when the vendor effects are left disabled.
-        audioDevice = JavaAudioDeviceModule.builder(this.context).setUseHardwareAcousticEchoCanceler(false).setUseHardwareNoiseSuppressor(false).createAudioDeviceModule();
+        // Keep the platform's low-latency audio effects. They avoid the
+        // emulator's software audio path starving the video decoder when the
+        // microphone is enabled, while physical devices still use their normal
+        // vendor AEC/noise suppression implementation.
+        audioDevice = JavaAudioDeviceModule.builder(this.context).setUseHardwareAcousticEchoCanceler(true).setUseHardwareNoiseSuppressor(true).createAudioDeviceModule();
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioDevice)
             .setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(), true, true))
             .setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
@@ -173,8 +169,6 @@ final class RtcSession {
         if (videoSlot != null) videoSlot.getSender().setTrack(screenTrack, false);
     }
     private void attachRemote() {
-        MediaStreamTrack micAudio = micSlot == null ? null : micSlot.getReceiver().track();
-        if (micAudio instanceof AudioTrack) ((AudioTrack) micAudio).setVolume(0.8);
         MediaStreamTrack audio = audioSlot == null ? null : audioSlot.getReceiver().track();
         if (audio instanceof AudioTrack) ((AudioTrack) audio).setVolume(0.8);
         MediaStreamTrack video = videoSlot == null ? null : videoSlot.getReceiver().track();
@@ -193,7 +187,6 @@ final class RtcSession {
         if (enabled && micTrack == null) {
             MediaConstraints constraints = new MediaConstraints();
             constraints.mandatory.add(new MediaConstraints.KeyValuePair("googEchoCancellation", "true"));
-            constraints.optional.add(new MediaConstraints.KeyValuePair("googEchoCancellation2", "true"));
             constraints.mandatory.add(new MediaConstraints.KeyValuePair("googNoiseSuppression", "true"));
             micSource = factory.createAudioSource(constraints); micTrack = factory.createAudioTrack("microphone", micSource);
             micTrack.setEnabled(true); attach();
@@ -229,5 +222,5 @@ final class RtcSession {
         listener.remoteVideo(null);
         if (old != null) { old.close(); old.dispose(); }
     }
-    void release() { stopScreen(); setMicrophone(false); closePeer(); if (audioManager != null) audioManager.setMode(previousAudioMode); factory.dispose(); audioDevice.release(); egl.release(); }
+    void release() { stopScreen(); setMicrophone(false); closePeer(); factory.dispose(); audioDevice.release(); egl.release(); }
 }
