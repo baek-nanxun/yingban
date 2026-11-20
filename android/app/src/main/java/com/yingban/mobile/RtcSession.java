@@ -41,6 +41,7 @@ final class RtcSession {
     private VideoTrack screenTrack;
     private final List<IceCandidate> candidates = new ArrayList<>();
     private boolean remoteSet;
+    private boolean remoteAttachScheduled;
     private boolean sharing;
 
     RtcSession(Context context, Listener listener) {
@@ -93,9 +94,12 @@ final class RtcSession {
                     else if (state == PeerConnection.PeerConnectionState.DISCONNECTED) listener.state("网络中断，正在尝试恢复", false);
                 });
             }
-            // WebRTC disposes the transceiver passed to onTrack after this callback.
-            // The stable receiver tracks are attached after setRemoteDescription.
-            @Override public void onTrack(RtpTransceiver transceiver) { }
+            // WebRTC may deliver onTrack just before setRemoteDescription's
+            // callback assigns the stable transceiver slots. Retry attachment
+            // on the main thread so a video track is not lost in that race.
+            @Override public void onTrack(RtpTransceiver transceiver) { main.post(() -> {
+                if (holder[0] != null && peer == holder[0]) attachRemote();
+            }); }
         });
         if (current == null) { listener.error("无法初始化音视频连接。"); return; }
         holder[0] = current; peer = current;
@@ -174,7 +178,16 @@ final class RtcSession {
         MediaStreamTrack audio = audioSlot == null ? null : audioSlot.getReceiver().track();
         if (audio instanceof AudioTrack) ((AudioTrack) audio).setVolume(0.8);
         MediaStreamTrack video = videoSlot == null ? null : videoSlot.getReceiver().track();
-        if (video instanceof VideoTrack) listener.remoteVideo((VideoTrack) video);
+        if (video instanceof VideoTrack) {
+            remoteAttachScheduled = false;
+            listener.remoteVideo((VideoTrack) video);
+        } else if (peer != null && remoteSet && !remoteAttachScheduled) {
+            remoteAttachScheduled = true;
+            main.postDelayed(() -> {
+                remoteAttachScheduled = false;
+                if (peer != null && remoteSet) attachRemote();
+            }, 100);
+        }
     }
     void setMicrophone(boolean enabled) {
         if (enabled && micTrack == null) {
@@ -212,7 +225,7 @@ final class RtcSession {
         if (texture != null) { texture.dispose(); texture = null; }
     }
     void closePeer() {
-        PeerConnection old = peer; peer = null; micSlot = audioSlot = videoSlot = null; remoteSet = false; candidates.clear();
+        PeerConnection old = peer; peer = null; micSlot = audioSlot = videoSlot = null; remoteSet = false; remoteAttachScheduled = false; candidates.clear();
         listener.remoteVideo(null);
         if (old != null) { old.close(); old.dispose(); }
     }
