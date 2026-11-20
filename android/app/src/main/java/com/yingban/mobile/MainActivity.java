@@ -56,6 +56,7 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     private ImageView localAvatarView, remoteAvatarView;
     private ImageButton micButton, shareButton;
     private ImageButton fullscreenButton, pipButton;
+    private ImageButton fullscreenExitButton;
     private View sessionHeader, sessionControls;
     private FrameLayout stage;
     private SurfaceViewRenderer video;
@@ -171,6 +172,11 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         LinearLayout remote = participant(); remoteAvatarView = (ImageView) remote.getChildAt(0); remoteNameView = (TextView) remote.getChildAt(1); remoteStateView = (TextView) remote.getChildAt(2);
         participants.addView(local, new LinearLayout.LayoutParams(0, -2, 1)); participants.addView(remote, new LinearLayout.LayoutParams(0, -2, 1));
         stage.addView(video, new FrameLayout.LayoutParams(-1, -1)); video.setVisibility(View.GONE);
+        fullscreenExitButton = icon(android.R.drawable.ic_menu_view, "退出全屏", true);
+        fullscreenExitButton.setOnClickListener(v -> setFullscreen(false));
+        FrameLayout.LayoutParams fullscreenExitParams = new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.TOP | Gravity.END);
+        fullscreenExitParams.topMargin = dp(12); fullscreenExitParams.rightMargin = dp(12);
+        stage.addView(fullscreenExitButton, fullscreenExitParams); fullscreenExitButton.setVisibility(View.GONE);
         gap(root, 18);
         LinearLayout controls = row(); controls.setGravity(Gravity.CENTER); sessionControls = controls; root.addView(controls);
         micButton = icon(R.drawable.ic_mic_off, "开启麦克风", true); micButton.setOnClickListener(v -> toggleMic()); controls.addView(micButton, new LinearLayout.LayoutParams(dp(58), dp(58)));
@@ -222,16 +228,20 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         if (sessionHeader != null) sessionHeader.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         if (sessionControls != null) sessionControls.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         if (statusView != null) statusView.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        if (fullscreenExitButton != null) fullscreenExitButton.setVisibility(fullscreen && !isInPictureInPictureMode() ? View.VISIBLE : View.GONE);
     }
 
     private void toggleFullscreen() {
-        int flags = getWindow().getDecorView().getSystemUiVisibility();
-        if ((flags & View.SYSTEM_UI_FLAG_FULLSCREEN) != 0) {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-        } else {
+        setFullscreen(!isFullscreen());
+    }
+
+    private void setFullscreen(boolean fullscreen) {
+        if (fullscreen) {
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         }
-        applyFullscreenUi(isFullscreen());
+        applyFullscreenUi(fullscreen);
         root.requestApplyInsets(); updateSession();
     }
 
@@ -347,8 +357,16 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     private void toast(String message) { Toast.makeText(this, message, Toast.LENGTH_LONG).show(); }
     private void leave() {
         inRoom = connecting = peerJoined = peerSharing = connected = false; role = peerName = peerAvatar = "";
+        setFullscreen(false);
         rtc.stopScreen(); stopProjection(); rtc.setMicrophone(false); rtc.closePeer(); room.close(); currentStatus = "等待对方加入"; home();
     }
-    @Override public void onBackPressed() { if (inRoom) new AlertDialog.Builder(this).setMessage("结束当前通话？").setNegativeButton("取消", null).setPositiveButton("结束通话", (d, w) -> leave()).show(); else super.onBackPressed(); }
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        room.close(); rtc.stopScreen(); stopProjection();
+        super.onTaskRemoved(rootIntent);
+    }
+    @Override public void onBackPressed() {
+        if (inRoom && isFullscreen()) { setFullscreen(false); return; }
+        if (inRoom) new AlertDialog.Builder(this).setMessage("结束当前通话？").setNegativeButton("取消", null).setPositiveButton("结束通话", (d, w) -> leave()).show(); else super.onBackPressed();
+    }
     @Override protected void onDestroy() { room.close(); rtc.stopScreen(); stopProjection(); rtc.closePeer(); video.release(); rtc.release(); super.onDestroy(); }
 }
