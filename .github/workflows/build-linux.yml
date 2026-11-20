@@ -1,0 +1,53 @@
+name: Build YingBan Linux
+
+on:
+  push:
+    branches: [main, master, 'Nanswin/**']
+    paths:
+      - 'app/**'
+      - 'build/linux.json'
+      - 'scripts/test-linux-audio.sh'
+      - 'tests/*.test.cjs'
+      - 'tests/linux*.cjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-linux.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'build/linux.json'
+      - 'scripts/test-linux-audio.sh'
+      - 'tests/*.test.cjs'
+      - 'tests/linux*.cjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-linux.yml'
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build Linux packages
+        run: npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yingban-linux-x64
+          retention-days: 30
+          path: |
+            dist-linux/*.AppImage
+            dist-linux/*.deb
+          if-no-files-found: error
+      - name: Install virtual desktop and audio test dependencies
+        run: sudo apt-get update && sudo apt-get install -y openbox pipewire pipewire-pulse wireplumber pulseaudio-utils dbus-x11
+      - name: Verify isolated audio capture and ducking
+        run: bash scripts/test-linux-audio.sh
+      - name: Verify Linux desktop and screen sharing
+        run: xvfb-run -a -s '-screen 0 1280x800x24' sh -c 'openbox >/tmp/yingban-openbox.log 2>&1 & exec npm run test:linux'
