@@ -65,6 +65,8 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     private RtcSession rtc;
     private SharedPreferences prefs;
     private boolean inRoom, connecting, peerJoined, peerSharing, connected, boundProjection;
+    private boolean fullscreenVideo, fullscreenBeforePip;
+    private int remoteVideoWidth = 16, remoteVideoHeight = 9;
     private String role = "", peerName = "", peerAvatar = "", currentStatus = "等待对方加入";
     private Intent pendingProjection;
     private final ServiceConnection projectionConnection = new ServiceConnection() {
@@ -88,7 +90,10 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         video.setContentDescription("等待共享画面");
         video.init(rtc.eglContext(), new RendererCommon.RendererEvents() {
             @Override public void onFirstFrameRendered() { runOnUiThread(() -> video.setContentDescription("共享画面已接收")); }
-            @Override public void onFrameResolutionChanged(int width, int height, int rotation) { }
+            @Override public void onFrameResolutionChanged(int width, int height, int rotation) {
+                if (rotation % 180 != 0) { int swap = width; width = height; height = swap; }
+                remoteVideoWidth = Math.max(1, width); remoteVideoHeight = Math.max(1, height);
+            }
         });
         video.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT);
         // Hardware scaling is unstable with Android's SwiftShader emulator and
@@ -124,6 +129,10 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     private void setRoot(boolean scrollable) {
         root = column(); root.setPadding(dp(22), dp(16), dp(22), dp(18)); root.setBackgroundColor(BACKGROUND);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
+            if (fullscreenVideo || isInPictureInPictureMode()) {
+                view.setPadding(0, 0, 0, 0);
+                return insets;
+            }
             int left, top, right, bottom;
             if (Build.VERSION.SDK_INT >= 30) {
                 Insets safe = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
@@ -212,34 +221,39 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         remoteNameView.setText(peerName.isEmpty() ? "对方" : peerName); remoteStateView.setText(peerJoined ? (connected ? "已连接" : "正在连接") : "等待加入");
         localAvatarView.clearColorFilter(); remoteAvatarView.clearColorFilter(); avatar(localAvatarView, profileAvatar()); avatar(remoteAvatarView, peerAvatar);
         boolean showRemote = peerSharing && remoteVideo != null; video.setVisibility(showRemote ? View.VISIBLE : View.GONE); stageBody.setVisibility(showRemote ? View.GONE : View.VISIBLE);
+        if (fullscreenExitButton != null) fullscreenExitButton.setVisibility(fullscreenVideo && !isInPictureInPictureMode() && showRemote ? View.VISIBLE : View.GONE);
         stageLabel.setText(rtc.isSharing() ? "正在共享手机画面" : peerSharing ? "等待对方的画面…" : peerJoined ? "通话中" : "等待对方加入");
         micButton.setImageResource(rtc.isMicOn() ? R.drawable.ic_mic : R.drawable.ic_mic_off); micButton.setContentDescription(rtc.isMicOn() ? "关闭麦克风" : "开启麦克风");
         shareButton.setColorFilter(rtc.isSharing() ? ACCENT : INK); shareButton.setContentDescription(rtc.isSharing() ? "停止共享" : "共享屏幕");
         if (fullscreenButton != null) {
-            boolean fullscreen = isFullscreen();
-            fullscreenButton.setImageResource(fullscreen ? R.drawable.ic_fullscreen_exit : R.drawable.ic_fullscreen);
-            fullscreenButton.setContentDescription(fullscreen ? "退出全屏" : "全屏");
+            fullscreenButton.setImageResource(fullscreenVideo ? R.drawable.ic_fullscreen_exit : R.drawable.ic_fullscreen);
+            fullscreenButton.setContentDescription(fullscreenVideo ? "退出全屏" : "全屏");
         }
-        if (pipButton != null) { pipButton.setImageResource(R.drawable.ic_picture_in_picture); pipButton.setContentDescription("画中画"); pipButton.setEnabled(Build.VERSION.SDK_INT >= 26 && !isInPictureInPictureMode()); }
+        if (pipButton != null) { pipButton.setImageResource(R.drawable.ic_picture_in_picture); pipButton.setContentDescription("画中画"); pipButton.setEnabled(Build.VERSION.SDK_INT >= 26 && remoteVideo != null && peerSharing && !isInPictureInPictureMode()); }
     }
 
-    private boolean isFullscreen() {
-        int flags = getWindow().getDecorView().getSystemUiVisibility();
-        return (flags & View.SYSTEM_UI_FLAG_FULLSCREEN) != 0;
-    }
+    private boolean isFullscreen() { return fullscreenVideo; }
 
     private void applyFullscreenUi(boolean fullscreen) {
+        fullscreenVideo = fullscreen;
         if (sessionHeader != null) sessionHeader.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         if (sessionControls != null) sessionControls.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         if (statusView != null) statusView.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
-        if (fullscreenExitButton != null) fullscreenExitButton.setVisibility(fullscreen && !isInPictureInPictureMode() ? View.VISIBLE : View.GONE);
+        if (fullscreenExitButton != null) fullscreenExitButton.setVisibility(fullscreen && !isInPictureInPictureMode() && remoteVideo != null ? View.VISIBLE : View.GONE);
+        if (stage != null) {
+            stage.setClipToOutline(!fullscreen);
+            stage.setBackgroundColor(fullscreen ? Color.BLACK : Color.rgb(237, 226, 214));
+        }
+        if (root != null) {
+            root.setBackgroundColor(fullscreen ? Color.BLACK : BACKGROUND);
+            if (fullscreen) root.setPadding(0, 0, 0, 0);
+        }
     }
 
-    private void toggleFullscreen() {
-        setFullscreen(!isFullscreen());
-    }
+    private void toggleFullscreen() { setFullscreen(!fullscreenVideo); }
 
     private void setFullscreen(boolean fullscreen) {
+        if (fullscreen && remoteVideo == null) { toast("共享画面出现后才能全屏"); return; }
         if (fullscreen) {
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         } else {
@@ -249,10 +263,19 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         root.requestApplyInsets(); updateSession();
     }
 
+    private Rational videoAspectRatio() {
+        int width = Math.max(1, remoteVideoWidth), height = Math.max(1, remoteVideoHeight);
+        double ratio = (double) width / height;
+        ratio = Math.max(0.418, Math.min(2.39, ratio));
+        int denominator = 1000, numerator = Math.max(1, (int) Math.round(ratio * denominator));
+        return new Rational(numerator, denominator);
+    }
+
     private void enterPictureInPicture() {
         if (Build.VERSION.SDK_INT < 26 || !inRoom) return;
         try {
-            PictureInPictureParams params = new PictureInPictureParams.Builder().setAspectRatio(new Rational(16, 9)).build();
+            fullscreenBeforePip = fullscreenVideo;
+            PictureInPictureParams params = new PictureInPictureParams.Builder().setAspectRatio(videoAspectRatio()).build();
             enterPictureInPictureMode(params);
         } catch (Exception e) { toast("当前设备不支持小窗"); }
     }
@@ -260,9 +283,15 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     @Override public void onPictureInPictureModeChanged(boolean inPip, android.content.res.Configuration configuration) {
         super.onPictureInPictureModeChanged(inPip, configuration);
         if (inPip) applyFullscreenUi(true);
-        else applyFullscreenUi(isFullscreen());
-        if (stage != null) stage.setBackgroundColor(inPip ? Color.BLACK : Color.rgb(237, 226, 214));
-        if (!inPip) updateSession();
+        else {
+            fullscreenVideo = fullscreenBeforePip;
+            applyFullscreenUi(fullscreenVideo);
+            if (!fullscreenVideo) {
+                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+                root.requestApplyInsets();
+            }
+        }
+        updateSession();
     }
     private void toggleMic() {
         if (rtc.isMicOn()) { rtc.setMicrophone(false); sendState(); updateSession(); return; }
