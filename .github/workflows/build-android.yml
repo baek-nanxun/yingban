@@ -1,0 +1,55 @@
+name: Build YingBan Android
+
+on:
+  push:
+    branches: [main, master, 'Nanswin/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+      - name: Build Android test package
+        run: gradle -p android :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yingban-android-debug
+          retention-days: 30
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install virtual desktop window manager
+        run: sudo apt-get update && sudo apt-get install -y openbox
+      - name: Verify Android and desktop interoperability
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          # Emulator 37.3.10 currently fails WebRTC's SwiftShader color-buffer
+          # path in this test (no frames reach SurfaceViewRenderer). Pin the
+          # last version that passed the same Android 35 interoperability test.
+          emulator-build: 16740729
+          script: adb install android/app/build/outputs/apk/debug/app-debug.apk && xvfb-run -a -s '-screen 0 1280x800x24' sh -c 'openbox >/tmp/yingban-openbox.log 2>&1 & exec node tests/android-desktop.cjs'
