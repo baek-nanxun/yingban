@@ -26,4 +26,6 @@ public final class ProjectionService extends Service {
     }
     @Override public IBinder onBind(Intent intent) { return binder; }
     @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_NOT_STICKY; }
+    @Override public void onTaskRemoved(Intent rootIntent) { stopSelf(); super.onTaskRemoved(rootIntent); }
+    @Override public void onDestroy() { stopForeground(true); super.onDestroy(); }
 }

@@ -79,7 +79,15 @@ final class RoomConnection {
         Thread previousShutdown = serverShutdown;
         new Thread(() -> {
             try {
-                if (previousShutdown != null) previousShutdown.join(1500);
+                // WebSocketServer.stop() closes active peers before its
+                // selector releases 43127. Do not race a new server against
+                // that shutdown; the old 1.5s wait was shorter than the
+                // close handshake on Android and left the next create() with
+                // a false "port occupied" error.
+                if (previousShutdown != null) {
+                    previousShutdown.join(7000);
+                    if (previousShutdown.isAlive()) throw new IllegalStateException("上一个房间仍在关闭，请稍后再试。");
+                }
                 if (generation != current) return;
                 byte[] bytes = new byte[24]; new SecureRandom().nextBytes(bytes);
                 StringBuilder secret = new StringBuilder();
@@ -87,9 +95,11 @@ final class RoomConnection {
                 String token = secret.toString();
                 String roomCode = String.valueOf(100000 + new SecureRandom().nextInt(900000));
                 Server next = new Server(token); server = next; next.start();
-                if (!next.started.await(8, TimeUnit.SECONDS) || next.failure != null)
+                if (!next.started.await(8, TimeUnit.SECONDS) || next.failure != null) {
+                    try { next.stop(1000); } catch (Exception ignored) { }
                     throw new IllegalStateException("无法创建房间，请确认 43127 端口未被占用。");
-                if (generation != current) { next.stop(); return; }
+                }
+                if (generation != current) { if (server == next) server = null; try { next.stop(5000); } catch (Exception ignored) { } return; }
                 DatagramSocket udp = new DatagramSocket(null); udp.setReuseAddress(false); udp.bind(new InetSocketAddress(DISCOVERY_PORT)); discovery = udp;
                 acquireMulticast();
                 Thread responder = new Thread(() -> respond(udp, roomCode, token), "yingban-discovery"); responder.setDaemon(true); responder.start();
@@ -140,7 +150,13 @@ final class RoomConnection {
         WebSocketClient c = client; client = null; if (c != null) c.close();
         DatagramSocket d = discovery; discovery = null; if (d != null) d.close();
         Server s = server; server = null;
-        if (s != null) { Thread shutdown = new Thread(() -> { try { s.stop(1000); } catch (Exception ignored) { } }, "yingban-server-close"); serverShutdown = shutdown; shutdown.start(); }
+        if (s != null) {
+            Thread shutdown = new Thread(() -> {
+                try { s.stop(5000); }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            }, "yingban-server-close");
+            serverShutdown = shutdown; shutdown.start();
+        }
         synchronized (this) { if (multicastLock != null && multicastLock.isHeld()) multicastLock.release(); multicastLock = null; }
         code = ""; invite = "";
     }
@@ -199,7 +215,7 @@ final class RoomConnection {
     private static final class Server extends WebSocketServer {
         final String token; final CountDownLatch started = new CountDownLatch(1);
         final Map<WebSocket, String> peers = new LinkedHashMap<>(); volatile Exception failure;
-        Server(String token) { super(new InetSocketAddress("0.0.0.0", SIGNAL_PORT), Collections.singletonList(new Draft_6455(Collections.emptyList(), 128 * 1024))); this.token = token; setConnectionLostTimeout(25); }
+        Server(String token) { super(new InetSocketAddress("0.0.0.0", SIGNAL_PORT), Collections.singletonList(new Draft_6455(Collections.emptyList(), 128 * 1024))); this.token = token; setReuseAddr(true); setConnectionLostTimeout(25); }
         @Override public void onStart() { started.countDown(); }
         @Override public synchronized void onOpen(WebSocket socket, ClientHandshake request) {
             String path = request.getResourceDescriptor();

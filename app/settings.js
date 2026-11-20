@@ -10,7 +10,7 @@
     $('remoteVoice').textContent = !runtime.connected ? '未连接' : runtime.remoteMuted ? '未开麦' : runtime.remoteSpeaking ? '说话中' : '安静';
     const receivingOnly = runtime.peerSharing && !runtime.sharing;
     $('duckEnabled').disabled = $('duckDepth').disabled = Boolean(receivingOnly);
-    if (receivingOnly) { $('duckEnabled').checked = runtime.peerDuckEnabled !== false; $('duckDepth').value = runtime.peerDuckDepth || 15; }
+    if (receivingOnly) { $('duckEnabled').checked = runtime.peerDuckEnabled !== false; $('duckDepth').value = runtime.peerDuckDepth || 9; }
     else if (snapshot) { $('duckEnabled').checked = snapshot.preferences.duckEnabled; $('duckDepth').value = snapshot.preferences.duckDepth; }
     $('duckDescription').textContent = receivingOnly ? '此房间由共享者控制人声优先。' : '任意一方说话时降低共享内容的声音。';
     $('duckStatus').textContent = runtime.ducking ? '共享端正在降低背景音' : runtime.sharing || runtime.peerSharing ? '背景音正常' : '';
@@ -37,7 +37,7 @@
     $('sharedVolume').value = p.sharedVolume; $('sensitivity').value = p.sensitivity;
     $('duckEnabled').checked = p.duckEnabled; $('duckDepth').value = p.duckDepth;
     $('versionLabel').textContent = `YingBan ${value.version}`; $('aboutVersion').textContent = `版本 ${value.version} · ${value.platform === 'linux' ? 'Linux' : 'Windows'}`;
-    $('scopeDescription').textContent = value.platform === 'linux' ? 'Linux 当前版本可以共享画面和麦克风，暂不支持采集应用声音。' : '应用窗口只共享所属应用的声音；整屏共享包含其他应用声音，并排除映伴通话。同一浏览器的多个标签页可能共用音频进程。';
+    $('scopeDescription').textContent = value.platform === 'linux' ? '共享窗口时请选择对应的声音应用；整屏共享采集可识别的其他应用，并排除映伴通话。同一浏览器的多个标签页可能共用音频。' : '应用窗口只共享所属应用的声音；整屏共享包含其他应用声音，并排除映伴通话。同一浏览器的多个标签页可能共用音频进程。';
     applyStatus(value.status || runtime);
   }
   let pendingPatch = {};

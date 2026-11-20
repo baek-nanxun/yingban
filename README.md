@@ -6,8 +6,8 @@
 
 仓库还包含面向 Linux x86_64 的桌面构建，以及 Android 8.0 及以上的手机构建。它们使用与 Windows 相同的房间号、邀请链接和 WebRTC 信令，可在同一局域网或可直连的 Tailscale 网络中使用。房间号依赖局域网 UDP 广播，跨网络或 Wi-Fi 隔离时请使用邀请链接；默认没有公网中继服务。
 
-- Linux 可创建或加入房间、收发麦克风、观看或共享画面。当前版本**不采集 Linux 应用或系统声音**，不会将整机声音作为替代；观看 Windows 共享时仍可接收 Windows 发送的声音。Linux 的共享应用声音和共享端自动降低应用音量尚未实现。Wayland 画面共享还取决于系统的 PipeWire 和桌面门户实现。
-- Android 可创建或加入房间、收发麦克风、观看对方画面和声音、共享手机画面，并设置昵称和头像。手机共享**只发送画面与麦克风**，不会采集其他应用的播放声音；屏幕共享需用户通过系统授权，并显示系统前台服务通知。手机最小化、息屏或被系统后台限制时，通话和麦克风是否持续工作取决于设备，尚不能保证。
+- Linux 可创建或加入房间、收发麦克风、观看或共享画面。本开发分支包含**尚未完成 Ubuntu 实测的声音共享原型**，按播放流采集，并尝试排除映伴进程树；不能视为已验证功能。Ubuntu 音频隔离、音量恢复、Wayland 选择器和真实双机测试的状态见 [交接文档](docs/ubuntu-audio-handoff.md)。
+- Android 可创建或加入房间、收发麦克风、观看对方画面和声音、共享手机画面，并设置昵称和头像。手机共享**只发送画面与麦克风**，不会采集其他应用的播放声音；屏幕共享需用户通过系统授权，并显示系统前台服务通知。通话页提供沉浸式全屏和 Android 画中画小窗，视频保持完整比例显示。手机最小化、息屏或被系统后台限制时，通话和麦克风是否持续工作取决于设备，尚不能保证。
 - Android 构建目前是调试签名的测试包，不能视为正式发布版本；不同机器或 CI 生成的调试签名可能不同，后续版本可能需要先卸载旧包。Linux 和 Android 的 Wi-Fi、防火墙、蓝牙音质、画面采集和回声消除仍需在目标设备上实测。
 
 构建 Linux 包需在 Linux 上执行 `npm ci` 和 `npm run dist:linux`，输出 AppImage 与 DEB。构建 Android 测试包需 JDK 17、Android SDK 35、Build Tools 35.0.0 和 Gradle 8.11.1，在仓库根目录执行 `gradle -p android :app:assembleDebug`，输出 `android/app/build/outputs/apk/debug/app-debug.apk`。这些构建产物不包含正式发布签名。
@@ -54,7 +54,7 @@
 - Windows 11 x64 优先；电脑声音的进程级采集使用 Windows 11 的 WASAPI Process Loopback。Windows 10 版本只能使用语音或无电脑声音的屏幕共享。
 - 只支持两台电脑、可信局域网或 Tailscale 直连。没有公网 TURN 中继、多人会议、摄像头、录制或自动重连。
 - 应用声音来自所选范围；共享前请关闭不希望被听到的应用。
-- 自动降音量使用带通滤波、门限、起声确认和约 650ms 保持时间。键盘声、外放漏音可能误触发，轻声可能漏判，可调节灵敏度。
+- 自动降音量使用带通滤波、较低灵敏度门限、起声确认和约 650ms 保持时间；共享端按约 260ms 降低、520ms 恢复的曲线渐进变化，默认强度从 15 dB 调整为 9 dB。键盘声、外放漏音可能误触发，轻声可能漏判，可调节灵敏度和降低强度。
 - 共享端会临时调整所选 Windows 音频会话的音量；正常停止或关闭后恢复。独占音频、ASIO、DRM 内容和不暴露独立会话的应用不保证支持。
 - 创建房间时映伴会请求 Windows 防火墙允许 TCP 43127 和 UDP 43128。若 UAC 被取消，需要在 Windows 防火墙中允许映伴，或用管理员 PowerShell 执行：`netsh advfirewall firewall add rule name="YingBan Signaling TCP" dir=in action=allow enable=yes profile=private,domain protocol=TCP localport=43127` 和 `netsh advfirewall firewall add rule name="YingBan Room Discovery UDP" dir=in action=allow enable=yes profile=private,domain protocol=UDP localport=43128`。不要把端口直接暴露到公网。
 - 媒体通过 WebRTC 加密传输，邀请地址中的随机密钥是加入凭证。程序不保存音视频，也不连接第三方分析服务。

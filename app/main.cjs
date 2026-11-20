@@ -9,7 +9,12 @@ const { release } = require('node:os');
 const { WebSocket } = require('ws');
 const { createRoom, parseInvite, discoverRoom } = require('./room.cjs');
 const { isNewerVersion, parseInstallerURL, selectInstaller } = require('./update.cjs');
+const { stopCaptureProcess } = require('./capture-stop.cjs');
 const isWindows = process.platform === 'win32';
+const isLinux = process.platform === 'linux';
+const isWayland = isLinux && process.env.XDG_SESSION_TYPE === 'wayland';
+const linuxAudio = isLinux ? require('./linux-audio.cjs') : null;
+const supportsAudio = () => isLinux || (isWindows && Number(release().split('.')[2]) >= 20348);
 const windowIcon = join(__dirname, isWindows ? 'icon.ico' : 'icon.png');
 
 function nativeHelperPath() {
@@ -21,7 +26,7 @@ function nativeHelperPath() {
 // Invitees need routable adapter candidates, including a Tailscale adapter.
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-if (process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland') {
+if (isWayland) {
   app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
 }
@@ -29,9 +34,9 @@ let window, settingsWindow, miniWindow, room, socket, capture, selectedSource, c
 let pendingProtocolInvite;
 let miniState = { inRoom: false, voiceOnly: false, mic: false };
 let windowMode = 'connect';
-let preferences = { duckEnabled: true, duckDepth: 15, sharedVolume: 80, sensitivity: 42, micDevice: '', outputDevice: '', inputMode: 'standard', displayName: '', avatarData: '' };
+let preferences = { duckEnabled: true, duckDepth: 9, sharedVolume: 80, sensitivity: 34, micDevice: '', outputDevice: '', inputMode: 'standard', displayName: '', avatarData: '' };
 let deviceList = [], runtimeStatus = {};
-function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion(), platform: process.platform, nativeAudio: isWindows && Number(release().split('.')[2]) >= 20348 }; }
+function settingsSnapshot() { return { preferences, devices: deviceList, status: runtimeStatus, version: app.getVersion(), platform: process.platform, nativeAudio: supportsAudio() }; }
 function sendSettings() {
   const snapshot = settingsSnapshot();
   sendWindow(window, 'settings:changed', snapshot);
@@ -98,6 +103,8 @@ if (!singleInstanceLock) app.quit();
 app.on('second-instance', (_event, argv) => queueProtocolInvite(protocolArgument(argv)));
 app.on('open-url', (event, value) => { event.preventDefault(); queueProtocolInvite(value); });
 let captureGeneration = 0;
+let captureStopping = Promise.resolve();
+let quittingAfterCapture = false;
 async function ensureFirewallRules() {
   if (!isWindows || process.env.CLEARCALL_TEST === '1') return { skipped: true };
   const rules = [
@@ -129,14 +136,11 @@ function stopCapture() {
   const current = capture;
   capture = undefined;
   captureTask = undefined;
-  if (!current) return;
-  current.stdin.end('\n');
-  const timer = setTimeout(() => { if (current.exitCode === null) current.kill(); }, 1000);
-  timer.unref();
-  current.once('exit', () => clearTimeout(timer));
+  if (current) captureStopping = Promise.all([captureStopping, stopCaptureProcess(current, isLinux ? 10000 : 1000)]).then(() => {});
+  return captureStopping;
 }
 async function leave() {
-  stopCapture();
+  await stopCapture();
   selectedSource = grantedSource = undefined;
   const current = socket;
   socket = undefined;
@@ -173,7 +177,16 @@ function handle(name, fn) {
 app.whenReady().then(() => {
   if (!singleInstanceLock) return;
   if (process.env.CLEARCALL_TEST !== '1') {
-    try { const saved = JSON.parse(fs.readFileSync(join(app.getPath('userData'), 'preferences.json'), 'utf8')); for (const key of Object.keys(preferences)) if (typeof saved[key] === typeof preferences[key]) preferences[key] = saved[key]; } catch {}
+    try {
+      const saved = JSON.parse(fs.readFileSync(join(app.getPath('userData'), 'preferences.json'), 'utf8'));
+      for (const key of Object.keys(preferences)) if (typeof saved[key] === typeof preferences[key]) preferences[key] = saved[key];
+      // 1.0.3's defaults were 15 dB / -42 dB. Move untouched defaults to the
+      // gentler curve; explicitly changed settings remain unchanged.
+      if (saved.duckDepth === 15 && saved.sensitivity === 42) {
+        preferences.duckDepth = 9; preferences.sensitivity = 34;
+        fs.writeFileSync(join(app.getPath('userData'), 'preferences.json'), JSON.stringify(preferences));
+      }
+    } catch {}
   }
   handle('settings:get', settingsSnapshot);
   handle('settings:open', openSettings);
@@ -182,7 +195,7 @@ app.whenReady().then(() => {
     if (!patch || typeof patch !== 'object') throw new Error('Invalid settings');
     for (const [key, value] of Object.entries(patch)) {
       if (key === 'duckEnabled' && typeof value === 'boolean') preferences[key] = value;
-      if (key === 'duckDepth' && Number.isFinite(value)) preferences[key] = Math.max(6, Math.min(24, value));
+      if (key === 'duckDepth' && Number.isFinite(value)) preferences[key] = Math.max(4, Math.min(18, value));
       if (key === 'sharedVolume' && Number.isFinite(value)) preferences[key] = Math.max(0, Math.min(100, value));
       if (key === 'sensitivity' && Number.isFinite(value)) preferences[key] = Math.max(25, Math.min(60, value));
       if (key === 'micDevice' && typeof value === 'string' && value.length < 1024) preferences[key] = value;
@@ -207,9 +220,10 @@ app.whenReady().then(() => {
     const id = selectedSource;
     selectedSource = undefined;
     try {
-      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
-      const source = sources.find(x => x.id === id);
-      grantedSource = source ? { id: source.id, name: source.name } : undefined;
+      const portalKind = isWayland && /^portal:(screen|window)$/.exec(id);
+      const sources = await desktopCapturer.getSources({ types: portalKind ? [portalKind[1]] : ['screen', 'window'] });
+      const source = portalKind ? sources[0] : sources.find(x => x.id === id);
+      grantedSource = source ? { id: source.id, name: source.name, kind: portalKind ? (portalKind[1] === 'window' ? 'app' : 'screen') : source.id.startsWith('window:') ? 'app' : 'screen' } : undefined;
       callback(source ? { video: source } : {});
     } catch { callback({}); }
   });
@@ -218,7 +232,7 @@ app.whenReady().then(() => {
     try {
       const firewall = await ensureFirewallRules();
       if (firewall.ready === false) throw new Error(firewall.message);
-      room = await createRoom(process.env.CLEARCALL_TEST === '1' ? { port: 0, host: '0.0.0.0' } : {});
+      room = await createRoom(process.env.CLEARCALL_TEST === '1' ? { port: 0, host: '0.0.0.0', ...(process.env.YINGBAN_TEST_DISCOVERY_PORT === '0' ? { discoveryPort: 0 } : {}) } : {});
       await connect(`ws://127.0.0.1:${room.port}/${room.token}`);
       return { invites: room.invites, roomId: room.roomId };
     } catch (error) {
@@ -243,6 +257,10 @@ app.whenReady().then(() => {
     if (message && ['description', 'candidate', 'peer-state', 'profile'].includes(message.type) && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   });
   handle('sources:list', async () => {
+    if (isWayland) return [
+      { id: 'portal:screen', name: '整个屏幕', kind: 'screen', thumbnail: '' },
+      { id: 'portal:window', name: '应用窗口', kind: 'app', thumbnail: '' }
+    ];
     const sources = (await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: true })).filter(x => !x.name.startsWith('映伴')).map(x => ({ id: x.id, name: x.name, kind: x.id.startsWith('window:') ? 'app' : 'screen', thumbnail: x.thumbnail.toDataURL() }));
     try {
       if (!isWindows) return sources;
@@ -257,6 +275,7 @@ app.whenReady().then(() => {
     return sources;
   });
   handle('sources:select', async id => {
+    if (isWayland && (id === 'portal:screen' || id === 'portal:window')) { selectedSource = id; grantedSource = undefined; return; }
     if (typeof id !== 'string' || !/^(?:screen|window):|^window-hwnd:/.test(id)) throw new Error('无效的共享窗口。');
     if (!isWindows) { if (id.startsWith('window-hwnd:')) throw new Error('无效的共享窗口。'); selectedSource = id; grantedSource = undefined; return; }
     if (id.startsWith('window-hwnd:')) {
@@ -276,11 +295,52 @@ app.whenReady().then(() => {
     if (!selectedSource) selectedSource = id;
     grantedSource = undefined;
   });
-  handle('audio:start', () => {
-    if (!isWindows) throw new Error('当前 Linux 版本暂不支持共享应用声音，可继续共享画面和麦克风。');
+  handle('audio:apps', async () => {
+    if (!isLinux) return [];
+    await linuxAudio.verifyTools();
+    return linuxAudio.applications(await linuxAudio.listStreams(process.pid));
+  });
+  handle('audio:start', async appKey => {
+    const requestedGeneration = captureGeneration;
+    await captureStopping;
+    if (requestedGeneration !== captureGeneration) throw new Error('共享已取消。');
+    if (!isWindows && !isLinux) throw new Error('当前系统不支持共享应用声音。');
     if (captureTask) return captureTask;
     const source = grantedSource;
     if (!source) throw new Error('请先选择并开始共享屏幕或应用。');
+    if (isLinux) {
+      const generation = captureGeneration;
+      const kind = source.kind || (source.id.startsWith('window:') ? 'app' : 'screen');
+      if (kind === 'app' && (typeof appKey !== 'string' || !appKey || appKey.length > 2048)) throw new Error('请选择与共享窗口对应的声音应用。');
+      const scope = { kind, name: source.name };
+      const current = spawn(process.execPath, [join(__dirname, 'linux-audio-worker.cjs'), String(process.pid), JSON.stringify({ kind, appKey: kind === 'app' ? appKey : undefined })], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['pipe', 'pipe', 'pipe']
+      });
+      capture = current;
+      captureTask = new Promise((resolve, reject) => {
+        let ready = false, stderr = '', failure = '';
+        const timeout = setTimeout(() => { reject(new Error('Linux 声音采集启动超时。')); if (capture === current) stopCapture(); }, 12000);
+        current.stderr.on('data', chunk => {
+          stderr += chunk.toString();
+          let newline;
+          while ((newline = stderr.indexOf('\n')) !== -1) {
+            const line = stderr.slice(0, newline).trim(); stderr = stderr.slice(newline + 1);
+            if (line.startsWith('ERROR ')) failure = line.slice(6);
+            if (!ready && line.startsWith('READY ')) { ready = true; clearTimeout(timeout); resolve({ sampleRate: 48000, channels: 2, scope }); }
+            if (capture === current && line.startsWith('DUCKED ')) ui('audio:ducked', { gain: Number(line.slice(7)) });
+          }
+        });
+        current.stdout.on('data', chunk => { if (capture === current) ui('audio:pcm', chunk); });
+        current.stdin.on('error', () => {});
+        current.on('error', () => { clearTimeout(timeout); reject(new Error('无法启动 Linux 声音采集组件。')); if (capture === current) { capture = undefined; captureTask = undefined; } });
+        current.on('exit', code => {
+          clearTimeout(timeout);
+          if (!ready) reject(new Error(failure || 'Linux 声音采集启动失败。'));
+          if (capture === current) { capture = undefined; captureTask = undefined; ui('audio:ended', { code, message: failure }); }
+        });
+      }).catch(error => { if (generation === captureGeneration) captureTask = undefined; throw error; });
+      return captureTask;
+    }
     const build = Number(release().split('.')[2]);
     if (build < 20348) throw new Error('安全采集电脑声音需要 Windows 11。当前系统可仅共享画面。');
     const helper = nativeHelperPath();
@@ -325,7 +385,7 @@ app.whenReady().then(() => {
     })().catch(error => { if (generation === captureGeneration) captureTask = undefined; throw error; });
     return captureTask;
   });
-  handle('audio:stop', () => { stopCapture(); return true; });
+  handle('audio:stop', async () => { await stopCapture(); return true; });
   handle('audio:duck', gain => {
     if (typeof gain !== 'number' || !Number.isFinite(gain) || gain < 0.05 || gain > 1) throw new Error('Invalid volume');
     if (capture && capture.stdin.writable) capture.stdin.write(`DUCK ${gain.toFixed(5)}\n`);
@@ -379,14 +439,14 @@ app.whenReady().then(() => {
     } catch (error) { await fs.promises.unlink(file).catch(() => {}); throw error; }
   });
   handle('updates:open', async url => { if (typeof url !== 'string' || !/^https:\/\/github\.com\/[^/]+\/yingban-windows\/(?:releases\/|releases\/download\/)/.test(url)) throw new Error('更新地址无效。'); await shell.openExternal(url); });
-  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, systemRelease: release(), windows: isWindows ? release() : undefined, nativeAudio: isWindows && Number(release().split('.')[2]) >= 20348, testMode: process.env.CLEARCALL_TEST === '1' }));
-  if (process.platform === 'win32' || process.platform === 'linux') {
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, systemRelease: release(), windows: isWindows ? release() : undefined, nativeAudio: supportsAudio(), testMode: process.env.CLEARCALL_TEST === '1' }));
+  if (process.env.CLEARCALL_TEST !== '1' && (isWindows || isLinux)) {
     for (const scheme of ['yingban', 'clearcall']) {
       if (process.defaultApp && process.argv.length >= 2) app.setAsDefaultProtocolClient(scheme, process.execPath, [process.argv[1]]);
       else app.setAsDefaultProtocolClient(scheme);
     }
   }
-  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: windowIcon, autoHideMenuBar: true, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: windowIcon, autoHideMenuBar: true, show: !(process.env.CLEARCALL_TEST === '1' && process.env.YINGBAN_TEST_HIDDEN === '1'), webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => { void leave(); });
@@ -401,4 +461,9 @@ app.whenReady().then(() => {
   window.on('restore', () => { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.hide(); });
 });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { stopCapture(); if (socket) socket.terminate(); });
+app.on('before-quit', event => {
+  if (quittingAfterCapture) return;
+  event.preventDefault();
+  if (socket) socket.terminate();
+  void stopCapture().then(() => { quittingAfterCapture = true; app.quit(); });
+});

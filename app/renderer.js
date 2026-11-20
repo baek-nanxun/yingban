@@ -2,11 +2,11 @@
   'use strict';
   const api = window.clearcall;
   const $ = id => document.getElementById(id);
-  const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 15, peerJoined: false, peerName: '', peerAvatar: '', peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
+  const s = { inRoom: false, busy: false, micBusy: false, role: '', muted: true, speaking: false, duckEnabled: true, duckDepth: 9, peerJoined: false, peerName: '', peerAvatar: '', peer: { sharing: false, muted: false }, candidates: [], generation: 0 };
   let ctx, master, sharedMaster, silence, outputGain, micStream, micMonitor, pc, tx, localVideo, remoteVideo;
   let outgoingSystem, pcmNode, pcmDestination, remoteMic, remoteSystem;
-  let moduleReady, selectedSource, lastTarget = -1, info = {};
-  let lastLocalTarget = 1;
+  let moduleReady, selectedSource, selectedSourceKind, audioAppsGeneration = 0, lastTarget = -1, info = {};
+  let localGain = 1, localGainTarget = 1, lastLocalTarget = 1, lastGainTime = performance.now();
   let localDucked = false;
   let audioScope, micGeneration = 0;
   let roomId = '', inputMode = 'standard', outputDevice = '', toastTimer, audioInitialization, settingsVisible = false;
@@ -140,7 +140,7 @@
     const receivingOnly = s.peer.sharing && !localVideo;
     $('duckEnabled').disabled = $('duckDepth').disabled = receivingOnly;
     $('duckEnabled').checked = receivingOnly ? s.peer.duckEnabled !== false : s.duckEnabled;
-    $('duckDepth').value = receivingOnly ? (s.peer.duckDepth || 15) : s.duckDepth;
+    $('duckDepth').value = receivingOnly ? (s.peer.duckDepth || 9) : s.duckDepth;
     $('duckDepthLabel').textContent = `${$('duckDepth').value} dB`;
     $('duckDescription').textContent = receivingOnly ? '视频音量由共享端统一控制。你说话时，对方会降低视频声音，两边一起变小。' : '任意一方说话时，在共享端降低视频声音。观看端跟随变化，不会再次自动压低。';
     void api.setMiniState({ inRoom: s.inRoom, voiceOnly: s.inRoom && !localVideo && !s.peer.sharing, mic: Boolean(micStream) });
@@ -279,7 +279,7 @@
       } else if (message.type === 'candidate' && s.inRoom) {
         if (pc?.remoteDescription) await pc.addIceCandidate(message.candidate); else s.candidates.push(message.candidate);
       } else if (message.type === 'peer-state') {
-        s.peer = { sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(6, Math.min(24, message.duckDepth)) : 15 }; controls(); refreshVideo();
+        s.peer = { sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(4, Math.min(18, message.duckDepth)) : 9 }; controls(); refreshVideo();
       } else if (message.type === 'profile') {
         s.peerName = typeof message.displayName === 'string' ? message.displayName.trim().slice(0, 20) : '';
         s.peerAvatar = typeof message.avatarData === 'string' && message.avatarData.length <= 48000 && /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(message.avatarData) ? message.avatarData : '';
@@ -330,7 +330,7 @@
     previous?.getTracks().forEach(t => { t.onended = null; t.stop(); });
     outgoingSystem?.getTracks().forEach(t => t.stop()); outgoingSystem = undefined;
     pcmNode?.disconnect(); pcmDestination?.disconnect(); pcmNode = pcmDestination = undefined;
-    await api.stopAudio(); lastLocalTarget = 1; localDucked = false; await peerState(); controls(); refreshVideo();
+    await api.stopAudio(); localGain = localGainTarget = lastLocalTarget = 1; lastGainTime = performance.now(); localDucked = false; await peerState(); controls(); refreshVideo();
   }
   async function endCall() {
     s.inRoom = false; s.peerJoined = false; s.peerName = s.peerAvatar = ''; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
@@ -341,20 +341,43 @@
     $('inviteCard').classList.add('hidden'); $('inviteSelect').replaceChildren(); roomId = ''; setText('roomNumber', '------'); connection('尚未连接'); controls(); refreshVideo();
     await api.setWindowMode('connect');
   }
-  async function openSources() {
-    s.busy = true; controls(); selectedSource = undefined; $('confirmShare').disabled = true;
+  function syncAudioPicker() {
+    const needsApp = info.platform === 'linux' && selectedSourceKind === 'app' && $('includeAudio').checked && !$('includeAudio').disabled;
+    $('linuxAudioPicker').hidden = !needsApp;
+    $('confirmShare').disabled = !selectedSource || (needsApp && !$('audioApp').value);
+  }
+  async function refreshAudioApps() {
+    const request = ++audioAppsGeneration, oldValue = $('audioApp').value;
+    $('refreshAudioApps').disabled = true;
     try {
+      const apps = await api.audioApps();
+      if (request !== audioAppsGeneration) return;
+      $('audioApp').replaceChildren(new Option(apps.length ? '请选择声音应用' : '请先播放声音并刷新', ''));
+      for (const item of apps) $('audioApp').add(new Option(`${item.name}（${item.binary}）`, item.id));
+      if (apps.some(item => item.id === oldValue)) $('audioApp').value = oldValue;
+      setText('scopeHint', '请播放目标应用声音并选择；同一浏览器可能包含其他标签页。');
+    } catch (error) {
+      if (request !== audioAppsGeneration) return;
+      $('audioApp').replaceChildren(new Option('声音应用不可用', ''));
+      setText('scopeHint', error.message);
+    } finally { if (request === audioAppsGeneration) { $('refreshAudioApps').disabled = false; syncAudioPicker(); } }
+  }
+  async function openSources() {
+    s.busy = true; controls(); selectedSource = selectedSourceKind = undefined; audioAppsGeneration++; syncAudioPicker();
+    try {
+      info = await api.info();
       const sources = await api.sources(); $('sourceGrid').replaceChildren();
       for (const source of sources) {
         const button = document.createElement('button'); button.className = 'source-item'; button.type = 'button';
         const image = document.createElement('img'); image.src = source.thumbnail || 'icons/monitor.svg'; image.alt = '';
         const label = document.createElement('span'); label.textContent = source.name; button.append(image, label);
         button.addEventListener('click', () => {
-          selectedSource = source.id;
+          selectedSource = source.id; selectedSourceKind = source.kind; audioAppsGeneration++;
           for (const child of $('sourceGrid').children) child.classList.toggle('selected', child === button);
-          $('confirmShare').disabled = false;
           setText('audioScopeLabel', source.kind === 'app' ? '同时共享所选应用的声音' : '同时共享其他所有应用的声音');
-          setText('scopeHint', !info.nativeAudio ? '当前系统暂不支持共享应用声音，可以共享画面并使用麦克风。' : source.kind === 'app' ? '仅共享此应用的声音；同一浏览器可能包含其他标签页。' : '共享其他所有应用声音，映伴通话声音会被排除。');
+          setText('scopeHint', !info.nativeAudio ? '当前系统暂不支持共享应用声音，可以共享画面并使用麦克风。' : info.platform === 'linux' && source.kind === 'app' ? '请播放目标应用声音并选择；同一浏览器可能包含其他标签页。' : info.platform === 'linux' ? '共享可识别的其他应用声音，映伴通话声音会被排除。' : source.kind === 'app' ? '仅共享此应用的声音；同一浏览器可能包含其他标签页。' : '共享其他所有应用声音，映伴通话声音会被排除。');
+          syncAudioPicker();
+          if (!$('linuxAudioPicker').hidden) void refreshAudioApps();
         });
         $('sourceGrid').append(button);
       }
@@ -385,7 +408,7 @@
         pcmNode = new AudioWorkletNode(ctx, 'clearcall-pcm', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
         pcmDestination = ctx.createMediaStreamDestination(); pcmNode.connect(pcmDestination); pcmNode.connect(silence);
         outgoingSystem = pcmDestination.stream; outgoingSystem.getAudioTracks()[0].contentHint = 'music';
-        audioScope = (await api.startAudio()).scope;
+        audioScope = (await api.startAudio($('audioApp').value)).scope;
       }
       if (!s.inRoom || generation !== s.generation) { await stopSharing(); return; }
       if (tx) {
@@ -405,7 +428,7 @@
     for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
     remainder = joined.slice(length); if (samples.length) pcmNode.port.postMessage(samples, [samples.buffer]);
   });
-  api.onAudioEnded(() => { if (s.inRoom && outgoingSystem) void stopSharing().then(() => notify('电脑声音采集中断，共享已停止。请检查音频设备后重试。', 'error')); });
+  api.onAudioEnded(({ message } = {}) => { if (s.inRoom && outgoingSystem) void stopSharing().then(() => notify(message || '电脑声音采集中断，共享已停止。请检查音频设备后重试。', 'error')); });
   api.onDucked(({ gain }) => { localDucked = gain < 0.999; void peerState(); });
   function level(node) {
     if (!node) return 0;
@@ -422,8 +445,13 @@
     setText('localVoice', !micStream ? '未开启' : localSpeaking ? '说话中' : '安静');
     setText('remoteVoice', !pc ? '未连接' : s.peer.muted ? '未开麦' : remoteSpeaking ? '说话中' : '安静');
     const duck = s.duckEnabled && (localSpeaking || remoteSpeaking);
-    const localTarget = localVideo && outgoingSystem && duck ? window.sharedGain(1, true, s.duckDepth) : 1;
-    if (Math.abs(localTarget - lastLocalTarget) > 0.0001) { lastLocalTarget = localTarget; void api.duckLocal(localTarget).catch(error => notify(`本机视频降音量失败：${error.message}`, 'error')); }
+    localGainTarget = localVideo && outgoingSystem && duck ? window.sharedGain(1, true, s.duckDepth) : 1;
+    const elapsed = Math.max(0, now - lastGainTime); lastGainTime = now;
+    localGain = window.rampGain(localGain, localGainTarget, elapsed);
+    if (Math.abs(localGain - lastLocalTarget) > 0.002 || Math.abs(localGainTarget - lastLocalTarget) > 0.002) {
+      lastLocalTarget = localGain;
+      void api.duckLocal(localGain).catch(error => notify(`本机视频降音量失败：${error.message}`, 'error'));
+    }
     // All automatic attenuation happens at the sharing source. A receiver only
     // applies its personal listening-volume slider, never a second speech duck.
     const target = Number($('sharedVolume').value) / 100;
@@ -473,6 +501,9 @@
   $('settingsButton').addEventListener('click', () => { void api.openSettings(); });
   $('homeSettings').addEventListener('click', () => { void api.openSettings(); });
   $('confirmShare').addEventListener('click', () => { void startSharing(); });
+  $('audioApp').addEventListener('change', syncAudioPicker);
+  $('refreshAudioApps').addEventListener('click', () => { void refreshAudioApps(); });
+  $('includeAudio').addEventListener('change', () => { syncAudioPicker(); if (!$('linuxAudioPicker').hidden) void refreshAudioApps(); });
   $('videoQuality').addEventListener('change', () => {
     const profile = videoProfiles[$('videoQuality').value];
     $('qualityHint').textContent = `${profile.width}×${profile.height} 上限 · 最高 ${profile.fps} 帧/秒 · 码率上限 ${profile.bitrate / 1000000} Mbps。实际清晰度取决于共享源、网络与设备，静态内容用量更低。`;
