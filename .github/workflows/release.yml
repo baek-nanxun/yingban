@@ -10,9 +10,9 @@ on:
         required: true
         type: string
       mode:
-        description: 'Publish the Windows release or an existing cross-platform preview draft'
+        description: 'Publish the Windows release, cross-platform preview, or Android-only preview'
         type: choice
-        options: [windows, preview]
+        options: [windows, preview, android]
         default: windows
       build_run_id:
         description: 'Successful Build YingBan run ID (preview mode)'
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   release:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode != 'preview' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'windows' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,3 +125,59 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$YB_RELEASE_ID" \
             -F draft=false -F prerelease=true -f "target_commitish=$GITHUB_SHA" \
             --jq '"Published preview: " + .html_url'
+
+  android:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'android' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      YB_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      YB_RELEASE_ID: ${{ inputs.release_id }}
+      YB_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify the Android draft and successful build
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$YB_BUILD_RUN_ID" =~ ^[0-9]+$ && "$YB_RELEASE_ID" =~ ^[0-9]+$ && "$YB_TAG" == preview-* ]]
+          YB_BUILD_JSON=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$YB_BUILD_RUN_ID")
+          [[ "$(jq -r '.conclusion' <<<"$YB_BUILD_JSON")" == success ]]
+          YB_BUILD_SHA=$(jq -r '.head_sha' <<<"$YB_BUILD_JSON")
+          git diff --quiet "$YB_BUILD_SHA" "$GITHUB_SHA" -- android build package.json package-lock.json LICENSE
+          YB_RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/$YB_RELEASE_ID")
+          jq -e --arg tag "$YB_TAG" '.draft and .prerelease and .tag_name == $tag' <<<"$YB_RELEASE_JSON" >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: yingban-android-debug
+          path: preview/android
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Upload the Android APK and publish the preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          YB_VERSION=$(node -p "require('./package.json').version")
+          mv preview/android/app-debug.apk "preview/YingBan-Android-$YB_VERSION-debug.apk"
+          cd preview
+          sha256sum "YingBan-Android-$YB_VERSION-debug.apk" > SHA256SUMS.txt
+          for YB_FILE in "YingBan-Android-$YB_VERSION-debug.apk" SHA256SUMS.txt; do
+            YB_RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/$YB_RELEASE_ID")
+            YB_EXISTING=$(jq -r --arg name "$YB_FILE" '.assets[] | select(.name == $name) | .digest // ""' <<<"$YB_RELEASE_JSON")
+            YB_HASH="sha256:$(sha256sum "$YB_FILE" | cut -d ' ' -f 1)"
+            if [[ -n "$YB_EXISTING" ]]; then
+              [[ "$YB_EXISTING" == "$YB_HASH" ]]
+              echo "Already uploaded: $YB_FILE"
+              continue
+            fi
+            curl --fail-with-body --silent --show-error -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/octet-stream' \
+              --data-binary "@$YB_FILE" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$YB_RELEASE_ID/assets?name=$YB_FILE" > /tmp/yingban-android-upload.json
+            [[ "$(jq -r '.digest' /tmp/yingban-android-upload.json)" == "$YB_HASH" ]]
+          done
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$YB_RELEASE_ID" \
+            -F draft=false -F prerelease=true -f "target_commitish=$GITHUB_SHA" \
+            --jq '"Published Android preview: " + .html_url'
