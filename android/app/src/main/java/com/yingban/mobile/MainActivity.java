@@ -360,13 +360,13 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         setFullscreen(false);
         rtc.stopScreen(); stopProjection(); rtc.setMicrophone(false); rtc.closePeer(); room.close(); currentStatus = "等待对方加入"; home();
     }
-    @Override public void onTaskRemoved(Intent rootIntent) {
-        room.close(); rtc.stopScreen(); stopProjection();
-        super.onTaskRemoved(rootIntent);
-    }
     @Override public void onBackPressed() {
         if (inRoom && isFullscreen()) { setFullscreen(false); return; }
         if (inRoom) new AlertDialog.Builder(this).setMessage("结束当前通话？").setNegativeButton("取消", null).setPositiveButton("结束通话", (d, w) -> leave()).show(); else super.onBackPressed();
+    }
+    @Override protected void onStop() {
+        super.onStop();
+        if (isFinishing() && !isChangingConfigurations()) { room.close(); rtc.stopScreen(); stopProjection(); }
     }
     @Override protected void onDestroy() { room.close(); rtc.stopScreen(); stopProjection(); rtc.closePeer(); video.release(); rtc.release(); super.onDestroy(); }
 }
