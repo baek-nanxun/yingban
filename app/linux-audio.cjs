@@ -47,15 +47,27 @@ function belongsToProcess(pid, owner, getProcess = processInfo) {
 function applicationKey(name, binary) {
   return Buffer.from(JSON.stringify([name, binary])).toString('base64url');
 }
+function clientPropertyMap(clients) {
+  return new Map(clients.map(client => [Number(client.index), client.properties || {}]));
+}
+function streamProperties(item, clientProperties) {
+  return { ...(clientProperties.get(Number(item.client)) || {}), ...(item.properties || {}) };
+}
+function findSavedInput(inputs, clients, previous, getProcess = processInfo) {
+  const clientProperties = clientPropertyMap(clients);
+  const input = inputs.find(item => Number(item.index) === previous.index && String(streamProperties(item, clientProperties)['application.process.id']) === String(previous.pid));
+  if (!input || getProcess(previous.pid)?.started !== previous.started) return null;
+  return input;
+}
 function safeStreams(inputs, sinks, owner, getProcess = processInfo, clients = []) {
   const monitors = new Map(sinks.map(sink => [Number(sink.index), sink.monitor_source || sink.monitor_source_name]));
   // PipeWire may keep process metadata on the owning PulseAudio client instead of the sink input.
-  const clientProperties = new Map(clients.map(client => [Number(client.index), client.properties || {}]));
+  const clientProperties = clientPropertyMap(clients);
   const ownerInfo = getProcess(owner);
   if (!ownerInfo) throw new Error('无法安全识别映伴进程，已停止声音共享。');
   const safe = [];
   for (const item of inputs) {
-    const props = { ...(clientProperties.get(Number(item.client)) || {}), ...(item.properties || {}) };
+    const props = streamProperties(item, clientProperties);
     const rawPid = String(props['application.process.id'] || '');
     const pid = Number(rawPid), index = Number(item.index), sink = Number(item.sink);
     const binary = props['application.process.binary'], name = props['application.name'] || binary;
@@ -109,4 +121,4 @@ function mixBuffers(lanes, bytes) {
   }
   return out;
 }
-module.exports = { pactl, verifyTools, processInfo, belongsToProcess, safeStreams, listStreams, applications, volumeForGain, volumesEqual, mixBuffers };
+module.exports = { pactl, verifyTools, processInfo, belongsToProcess, clientPropertyMap, streamProperties, findSavedInput, safeStreams, listStreams, applications, volumeForGain, volumesEqual, mixBuffers };
