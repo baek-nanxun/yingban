@@ -109,10 +109,11 @@ function mix() {
     const buffer = lane.buffer.subarray(0, bytes);
     lane.buffer = lane.buffer.subarray(bytes);
     if (lane.stream.muted) continue;
-    // A PipeWire monitor normally exposes samples before the stream volume.
-    // Respect its reported setting if a monitor explicitly includes that volume.
-    const volume = lane.stream.volume;
-    const gains = lane.stream.monitorHasVolume ? [1, 1] : [0, 1].map(i => Math.pow((volume[i] ?? volume[0]) / 65536, 3));
+    // parec reads a sink-input monitor after PipeWire/PulseAudio applies the
+    // stream volume. Applying that volume again here double-ducks the outgoing
+    // audio (0.17783 becomes roughly 0.0316). Keep the captured lane at unity;
+    // pactl's stream volume is the single attenuation point.
+    const gains = [1, 1];
     buffers.push({ buffer, gains });
   }
   process.stdout.write(mixBuffers(buffers, FRAME_BYTES));

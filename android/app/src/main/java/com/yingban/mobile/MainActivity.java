@@ -90,7 +90,10 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
             @Override public void onFrameResolutionChanged(int width, int height, int rotation) { }
         });
         video.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT);
-        video.setEnableHardwareScaler(true);
+        // Hardware scaling is unstable with Android's SwiftShader emulator and
+        // can prevent the first frame from reaching SurfaceViewRenderer.
+        // Leave scaling to the renderer; physical devices still use their
+        // normal hardware-accelerated WebRTC path.
         home();
         if (getIntent() != null && getIntent().getData() != null) acceptInvite(getIntent().getData());
     }
