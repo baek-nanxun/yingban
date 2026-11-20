@@ -4,7 +4,7 @@
 // runs in the renderer or blocks mouse input in the Electron main process.
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
-const { pactl, verifyTools, listStreams, processInfo, volumeForGain, volumesEqual, mixBuffers } = require('./linux-audio.cjs');
+const { pactl, verifyTools, listStreams, findSavedInput, volumeForGain, volumesEqual, mixBuffers } = require('./linux-audio.cjs');
 
 const FRAME_BYTES = 48000 * 2 * 2 / 50; // 20 ms, stereo s16le
 const MAX_BUFFER = FRAME_BYTES * 6;
@@ -120,13 +120,19 @@ function mix() {
 }
 async function restoreSaved() {
   if (!saved.size) return;
-  let inputs;
-  try { inputs = JSON.parse(await pactl('--format=json', 'list', 'sink-inputs')); }
+  let inputs, clients;
+  try {
+    const [inputJson, clientJson] = await Promise.all([
+      pactl('--format=json', 'list', 'sink-inputs'),
+      pactl('--format=json', 'list', 'clients')
+    ]);
+    inputs = JSON.parse(inputJson); clients = JSON.parse(clientJson);
+  }
   catch { return; }
-  if (!Array.isArray(inputs)) return;
+  if (!Array.isArray(inputs) || !Array.isArray(clients)) return;
   await Promise.allSettled([...saved.values()].map(async previous => {
-    const input = inputs.find(item => Number(item.index) === previous.index && String(item.properties?.['application.process.id']) === String(previous.pid));
-    if (!input || processInfo(previous.pid)?.started !== previous.started) return;
+    const input = findSavedInput(inputs, clients, previous);
+    if (!input) return;
     const volume = Object.values(input.volume || {}).map(channel => Number(channel.value));
     if (!volume.length || volume.some(value => !Number.isSafeInteger(value) || value < 0)) return;
     try { await restoreOne({ index: previous.index, volume }, previous); } catch {}
