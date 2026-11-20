@@ -62,7 +62,12 @@ async function waitForText(labels, timeout = 15000) {
       console.error('Android controls:', (await hierarchy()).replace(/[a-f0-9]{48}/g, '[redacted]'));
       throw error;
     }
-    await page.locator('#shareScreen').click(); await page.locator('.source-item').first().click(); await page.locator('#confirmShare').click();
+    // This interoperability check exercises the video path. Linux enables
+    // computer-audio sharing by default, but the CI Xvfb desktop has no real
+    // playback stream; starting the PipeWire worker here can starve the
+    // Android emulator. Audio capture has its own Linux integration test.
+    await page.locator('#shareScreen').click(); await page.locator('.source-item').first().click();
+    await page.locator('#includeAudio').uncheck(); await page.locator('#confirmShare').click();
     await page.waitForFunction(() => window.clearcallDiagnostics().sharing, null, { timeout: 30000 });
     await waitForDescription('共享画面已接收', 60000);
     assert.equal((await page.evaluate(() => window.clearcallDiagnostics())).computerAudio, false);
