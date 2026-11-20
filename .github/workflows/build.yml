@@ -109,4 +109,8 @@ jobs:
         with:
           api-level: 35
           arch: x86_64
+          # Emulator 37.3.10 currently fails WebRTC's SwiftShader color-buffer
+          # path in this test (no frames reach SurfaceViewRenderer). Pin the
+          # last version that passed the same Android 35 interoperability test.
+          emulator-build: 16740729
           script: adb install android/app/build/outputs/apk/debug/app-debug.apk && xvfb-run -a -s '-screen 0 1280x800x24' sh -c 'openbox >/tmp/yingban-openbox.log 2>&1 & exec node tests/android-desktop.cjs'
