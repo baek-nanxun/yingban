@@ -27,6 +27,22 @@ test('only identifiable non-call playback streams are eligible', () => {
   assert.equal(belongsToProcess(300, 100, getProcess), null);
   assert.throws(() => safeStreams(items, sinks, 999, getProcess), /无法安全识别/);
 });
+test('fills missing stream process metadata from the PulseAudio client', () => {
+  const item = input(17, 200, 'Client-only video');
+  item.client = 42;
+  delete item.properties['application.process.id'];
+  delete item.properties['application.process.binary'];
+  const result = safeStreams([item], sinks, 100, getProcess, [{
+    index: 42,
+    properties: {
+      'application.process.id': '200',
+      'application.process.binary': 'video-player'
+    }
+  }]);
+  assert.deepEqual(result.map(stream => stream.index), [17]);
+  assert.equal(result[0].pid, 200);
+  assert.equal(result[0].binary, 'video-player');
+});
 test('monitor routing and process start time are part of stream identity', () => {
   const unavailable = input(3, 200); unavailable.sink = 8;
   assert.deepEqual(safeStreams([unavailable], sinks, 100, getProcess), []);
