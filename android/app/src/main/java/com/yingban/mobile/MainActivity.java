@@ -158,8 +158,8 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         detachVideo(); setRoot(false);
         LinearLayout header = row(); sessionHeader = header; TextView title = text("映伴", 20, INK); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1));
-        fullscreenButton = icon(android.R.drawable.ic_menu_view, "全屏", false); fullscreenButton.setOnClickListener(v -> toggleFullscreen()); header.addView(fullscreenButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        pipButton = icon(android.R.drawable.ic_menu_crop, "小窗", false); pipButton.setOnClickListener(v -> enterPictureInPicture()); header.addView(pipButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        fullscreenButton = icon(R.drawable.ic_fullscreen, "全屏", false); fullscreenButton.setOnClickListener(v -> toggleFullscreen()); header.addView(fullscreenButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        pipButton = icon(R.drawable.ic_picture_in_picture, "画中画", false); pipButton.setOnClickListener(v -> enterPictureInPicture()); header.addView(pipButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
         ImageButton settings = icon(R.drawable.ic_settings, "设置", false); settings.setOnClickListener(v -> profileDialog()); header.addView(settings, new LinearLayout.LayoutParams(dp(44), dp(44))); root.addView(header);
         statusView = text(currentStatus, 13, MUTED); root.addView(statusView); gap(root, 16);
         stage = new FrameLayout(this); stage.setBackground(rounded(Color.rgb(237, 226, 214), 18)); stage.setClipToOutline(true);
@@ -172,7 +172,7 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         LinearLayout remote = participant(); remoteAvatarView = (ImageView) remote.getChildAt(0); remoteNameView = (TextView) remote.getChildAt(1); remoteStateView = (TextView) remote.getChildAt(2);
         participants.addView(local, new LinearLayout.LayoutParams(0, -2, 1)); participants.addView(remote, new LinearLayout.LayoutParams(0, -2, 1));
         stage.addView(video, new FrameLayout.LayoutParams(-1, -1)); video.setVisibility(View.GONE);
-        fullscreenExitButton = icon(android.R.drawable.ic_menu_view, "退出全屏", true);
+        fullscreenExitButton = icon(R.drawable.ic_fullscreen_exit, "退出全屏", true);
         fullscreenExitButton.setOnClickListener(v -> setFullscreen(false));
         FrameLayout.LayoutParams fullscreenExitParams = new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.TOP | Gravity.END);
         fullscreenExitParams.topMargin = dp(12); fullscreenExitParams.rightMargin = dp(12);
@@ -215,8 +215,12 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
         stageLabel.setText(rtc.isSharing() ? "正在共享手机画面" : peerSharing ? "等待对方的画面…" : peerJoined ? "通话中" : "等待对方加入");
         micButton.setImageResource(rtc.isMicOn() ? R.drawable.ic_mic : R.drawable.ic_mic_off); micButton.setContentDescription(rtc.isMicOn() ? "关闭麦克风" : "开启麦克风");
         shareButton.setColorFilter(rtc.isSharing() ? ACCENT : INK); shareButton.setContentDescription(rtc.isSharing() ? "停止共享" : "共享屏幕");
-        if (fullscreenButton != null) fullscreenButton.setContentDescription(isFullscreen() ? "退出全屏" : "全屏");
-        if (pipButton != null) pipButton.setEnabled(Build.VERSION.SDK_INT >= 26 && !isInPictureInPictureMode());
+        if (fullscreenButton != null) {
+            boolean fullscreen = isFullscreen();
+            fullscreenButton.setImageResource(fullscreen ? R.drawable.ic_fullscreen_exit : R.drawable.ic_fullscreen);
+            fullscreenButton.setContentDescription(fullscreen ? "退出全屏" : "全屏");
+        }
+        if (pipButton != null) { pipButton.setImageResource(R.drawable.ic_picture_in_picture); pipButton.setContentDescription("画中画"); pipButton.setEnabled(Build.VERSION.SDK_INT >= 26 && !isInPictureInPictureMode()); }
     }
 
     private boolean isFullscreen() {
@@ -363,10 +367,6 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     @Override public void onBackPressed() {
         if (inRoom && isFullscreen()) { setFullscreen(false); return; }
         if (inRoom) new AlertDialog.Builder(this).setMessage("结束当前通话？").setNegativeButton("取消", null).setPositiveButton("结束通话", (d, w) -> leave()).show(); else super.onBackPressed();
-    }
-    @Override protected void onStop() {
-        super.onStop();
-        if (isFinishing() && !isChangingConfigurations()) { room.close(); rtc.stopScreen(); stopProjection(); }
     }
     @Override protected void onDestroy() { room.close(); rtc.stopScreen(); stopProjection(); rtc.closePeer(); video.release(); rtc.release(); super.onDestroy(); }
 }
