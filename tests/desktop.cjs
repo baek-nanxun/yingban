@@ -106,7 +106,7 @@ async function fullscreen(client) {
     await settings.locator('#displayName').fill('小南');
     await settings.locator('#avatarFile').setInputFiles(join(out, 'ui-mini-mic.png'));
     await b.page.waitForFunction(() => document.getElementById('remoteName').textContent === '小南' && !document.getElementById('remoteAvatarImage').hidden);
-    assert.equal(await a.page.locator('#localName').innerText(), '小南（我）');
+    assert.equal(await a.page.locator('#localName').innerText(), '小南');
     await settings.screenshot({ path: join(out, 'ui-settings-profile.png'), scale: 'css' });
     console.log('PASS: nickname and avatar are saved and relayed to the other participant.');
     await settings.locator('[data-tab="sharing"]').click();

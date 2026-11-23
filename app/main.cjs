@@ -252,6 +252,13 @@ app.whenReady().then(() => {
     return result;
   });
   handle('window:mode', mode => { setWindowMode(mode); return mode; });
+  handle('window:minimize', () => { if (window && !window.isDestroyed()) window.minimize(); });
+  handle('window:toggle-maximize', () => {
+    if (!window || window.isDestroyed()) return false;
+    if (window.isMaximized()) window.unmaximize(); else window.maximize();
+    return window.isMaximized();
+  });
+  handle('window:close', () => { if (window && !window.isDestroyed()) window.close(); });
   handle('room:leave', leave);
   handle('signal:send', message => {
     if (message && ['description', 'candidate', 'peer-state', 'profile'].includes(message.type) && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
@@ -446,12 +453,16 @@ app.whenReady().then(() => {
       else app.setAsDefaultProtocolClient(scheme);
     }
   }
-  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, backgroundColor: '#f6f1eb', title: '映伴', icon: windowIcon, autoHideMenuBar: true, show: !(process.env.CLEARCALL_TEST === '1' && process.env.YINGBAN_TEST_HIDDEN === '1'), webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  window = new BrowserWindow({ width: 800, height: 560, minWidth: 720, minHeight: 500, frame: !isLinux, backgroundColor: '#f6f1eb', title: '映伴', icon: windowIcon, autoHideMenuBar: true, show: !(process.env.CLEARCALL_TEST === '1' && process.env.YINGBAN_TEST_HIDDEN === '1'), webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const sendWindowState = () => ui('window:state', { maximized: window.isMaximized() });
+  window.on('maximize', sendWindowState);
+  window.on('unmaximize', sendWindowState);
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => { void leave(); });
   window.loadFile(join(__dirname, 'index.html'));
   window.webContents.once('did-finish-load', () => {
+    sendWindowState();
     const invite = pendingProtocolInvite || protocolArgument(process.argv);
     pendingProtocolInvite = undefined;
     if (invite) ui('protocol:invite', invite);

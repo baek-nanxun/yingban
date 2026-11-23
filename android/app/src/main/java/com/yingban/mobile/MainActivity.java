@@ -208,7 +208,7 @@ public final class MainActivity extends Activity implements RoomConnection.Liste
     }
     private void updateSession() {
         if (!inRoom || stage == null) return;
-        statusView.setText(room.code.isEmpty() ? currentStatus : "房间 " + room.code + " · " + currentStatus); localNameView.setText(profileName().isEmpty() ? "我" : profileName() + "（我）");
+        statusView.setText(room.code.isEmpty() ? currentStatus : "房间 " + room.code + " · " + currentStatus); localNameView.setText(profileName().isEmpty() ? "我" : profileName());
         remoteNameView.setText(peerName.isEmpty() ? "对方" : peerName); remoteStateView.setText(peerJoined ? (connected ? "已连接" : "正在连接") : "等待加入");
         localAvatarView.clearColorFilter(); remoteAvatarView.clearColorFilter(); avatar(localAvatarView, profileAvatar()); avatar(remoteAvatarView, peerAvatar);
         boolean showRemote = peerSharing && remoteVideo != null; video.setVisibility(showRemote ? View.VISIBLE : View.GONE); stageBody.setVisibility(showRemote ? View.GONE : View.VISIBLE);

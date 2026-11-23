@@ -154,7 +154,7 @@
     $('pictureInPicture').disabled = !show || !document.pictureInPictureEnabled;
     $('localPresence').textContent = '已加入'; $('remotePresence').textContent = s.peerJoined ? (pc?.connectionState === 'connected' ? '已连接' : '已加入，正在连接') : '等待加入';
     $('remoteAvatar').classList.toggle('online', s.peerJoined);
-    $('localName').textContent = localProfile.displayName ? `${localProfile.displayName}（我）` : '我';
+    $('localName').textContent = localProfile.displayName || '我';
     $('remoteName').textContent = s.peerName || '对方';
     for (const [prefix, name, avatar, fallback] of [['local', localProfile.displayName, localProfile.avatarData, '我'], ['remote', s.peerName, s.peerAvatar, '对']]) {
       const img = $(`${prefix}AvatarImage`), initial = $(`${prefix}Initial`);
@@ -539,6 +539,15 @@
     controls(); refreshVideo(); void peerState(); if (profileChanged && s.inRoom) void sendProfile();
     if (restart) void stopMicrophone().then(() => microphone()).catch(error => notify(error.message, 'error'));
   }
+  function updateWindowState({ maximized = false } = {}) {
+    const button = $('windowMaximize');
+    if (!button) return;
+    button.title = button.ariaLabel = maximized ? '还原' : '最大化';
+  }
+  $('windowMinimize').addEventListener('click', () => { void api.minimizeWindow(); });
+  $('windowMaximize').addEventListener('click', () => { void api.toggleMaximizeWindow(); });
+  $('windowClose').addEventListener('click', () => { void api.closeWindow(); });
+  api.onWindowState(updateWindowState);
   api.onSettings(applyPreferences); api.onSettingsVisible(visible => { settingsVisible = visible; });
   api.onProtocolInvite(value => {
     if (typeof value !== 'string') return;
@@ -548,7 +557,7 @@
   api.onMiniCommand(action => { if (action !== 'toggle-mic') return; void (micStream ? stopMicrophone() : microphone()).catch(error => notify(error.message, 'error')); });
   void api.getSettings().then(applyPreferences);
   setInterval(() => { if (settingsVisible) void api.reportStatus({ mic: Boolean(micStream), connected: pc?.connectionState === 'connected', speaking: s.speaking, remoteSpeaking: Boolean(s.peer.speaking), remoteMuted: s.peer.muted, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharing: Boolean(localVideo), peerSharing: s.peer.sharing, peerDuckEnabled: s.peer.duckEnabled, peerDuckDepth: s.peer.duckDepth, ducking: localDucked || s.peer.sourceDucked }); }, 200);
-  api.info().then(result => { info = result; }).catch(() => {}); void devices().catch(() => {}); controls();
+  api.info().then(result => { info = result; document.body.dataset.platform = result.platform; }).catch(() => {}); void devices().catch(() => {}); controls();
   navigator.mediaDevices.addEventListener('devicechange', () => { void devices().catch(() => {}); });
   window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, encoder: tx?.video.sender.getParameters(), audioEncodings: { mic: tx?.mic?.sender.getParameters().encodings, system: tx?.system?.sender.getParameters().encodings } });
   window.clearcallMediaStats = async () => pc ? Array.from((await pc.getStats()).values()).filter(r => ['inbound-rtp', 'outbound-rtp', 'media-source'].includes(r.type)).map(r => ({ type: r.type, kind: r.kind, mid: r.mid, audioLevel: r.audioLevel, totalAudioEnergy: r.totalAudioEnergy, packetsReceived: r.packetsReceived, packetsSent: r.packetsSent, bytesSent: r.bytesSent })) : [];
