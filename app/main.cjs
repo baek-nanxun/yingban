@@ -6,8 +6,8 @@ const { promisify } = require('node:util');
 const runFile = promisify(execFile);
 const { join } = require('node:path');
 const { release } = require('node:os');
-const { WebSocket } = require('ws');
 const { createRoom, parseInvite, discoverRoom } = require('./room.cjs');
+const { createSignalingConnection } = require('./signaling.cjs');
 const { isNewerVersion, parseInstallerURL, selectInstaller } = require('./update.cjs');
 const { stopCaptureProcess } = require('./capture-stop.cjs');
 const isWindows = process.platform === 'win32';
@@ -30,7 +30,7 @@ if (isWayland) {
   app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
 }
-let window, settingsWindow, miniWindow, room, socket, capture, selectedSource, captureTask, grantedSource;
+let window, settingsWindow, miniWindow, room, signaling, capture, selectedSource, captureTask, grantedSource;
 let pendingProtocolInvite;
 let miniState = { inRoom: false, voiceOnly: false, mic: false };
 let windowMode = 'connect';
@@ -140,30 +140,24 @@ function stopCapture() {
   return captureStopping;
 }
 async function leave() {
+  const current = signaling;
+  signaling = undefined;
+  if (current) current.close(1000, 'Left');
   await stopCapture();
   selectedSource = grantedSource = undefined;
-  const current = socket;
-  socket = undefined;
-  if (current) current.close(1000, 'Left');
   if (room) { const existing = room; room = undefined; await existing.close(); }
 }
 async function connect(endpoint) {
-  const current = new WebSocket(endpoint, { maxPayload: 128 * 1024, handshakeTimeout: 8000 });
-  socket = current;
-  let opened = false;
-  current.on('message', raw => {
-    if (socket !== current) return;
-    try { ui('signal', JSON.parse(raw.toString())); } catch { }
-  });
-  current.on('error', () => {});
-  current.on('close', (code, reason) => {
-    if (socket === current) { socket = undefined; ui('signal', { type: 'closed', message: opened ? (reason.toString() === 'Room full' ? '通话已满，只支持两台电脑。' : '连接已断开，请重新加入。') : '无法连接到对方。' }); }
-  });
-  await new Promise((resolve, reject) => {
-    current.once('open', () => { opened = true; resolve(); });
-    current.once('error', () => reject(new Error('连接失败。请确认对方在线、地址正确，并允许 Windows 防火墙通过。')));
-    current.once('close', () => { if (!opened) reject(new Error('连接被拒绝。')); });
-  });
+  let current;
+  current = createSignalingConnection(endpoint, { onSignal: signal => ui('signal', signal) });
+  signaling = current;
+  try {
+    await current.connect();
+  } catch (error) {
+    if (signaling === current) signaling = undefined;
+    current.close();
+    throw error;
+  }
 }
 function handle(name, fn) {
   ipcMain.handle(name, async (event, ...args) => {
@@ -261,7 +255,7 @@ app.whenReady().then(() => {
   handle('window:close', () => { if (window && !window.isDestroyed()) window.close(); });
   handle('room:leave', leave);
   handle('signal:send', message => {
-    if (message && ['description', 'candidate', 'peer-state', 'profile'].includes(message.type) && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (message && ['description', 'candidate', 'peer-state', 'profile', 'recovery'].includes(message.type)) signaling?.send(message);
   });
   handle('sources:list', async () => {
     if (isWayland) return [
@@ -475,6 +469,6 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (quittingAfterCapture) return;
   event.preventDefault();
-  if (socket) socket.terminate();
+  if (signaling) signaling.close(1000, 'Quit');
   void stopCapture().then(() => { quittingAfterCapture = true; app.quit(); });
 });

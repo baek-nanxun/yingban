@@ -9,6 +9,7 @@ on:
       - 'scripts/test-linux-audio.sh'
       - 'tests/*.test.cjs'
       - 'tests/linux*.cjs'
+      - 'tests/stability.cjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/build-linux.yml'
@@ -19,6 +20,7 @@ on:
       - 'scripts/test-linux-audio.sh'
       - 'tests/*.test.cjs'
       - 'tests/linux*.cjs'
+      - 'tests/stability.cjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/build-linux.yml'
@@ -51,3 +53,5 @@ jobs:
         run: bash scripts/test-linux-audio.sh
       - name: Verify Linux desktop and screen sharing
         run: xvfb-run -a -s '-screen 0 1280x800x24' sh -c 'openbox >/tmp/yingban-openbox.log 2>&1 & exec npm run test:linux'
+      - name: Verify screen recovery and audio isolation
+        run: xvfb-run -a -s '-screen 0 1600x1000x24' npm run test:stability

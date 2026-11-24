@@ -18,6 +18,11 @@
     '1080p': { label: '1080p', width: 1920, height: 1080, fps: 30, bitrate: 6000000 }
   };
   let videoProfile = videoProfiles['4k'], videoStats = {}, previousVideoSample;
+  const videoHealth = new window.VideoHealth(), videoAdaptation = new window.VideoAdaptation();
+  let recoveryTimer, recoveryGeneration = 0, recoveryAttempts = 0, recoveryPending = false, recoveryReason = '', signalReconnecting = false;
+  let sharedAudioGeneration = 0;
+  let peerSession = '', lastRecoveryRequest = -Infinity, statsBusy = false, lastSentFrames, sharedAudioError = '';
+  let videoConfiguration = Promise.resolve();
   const localGate = new window.SpeechGate(), remoteGate = new window.SpeechGate();
   const notify = (message, type = '') => {
     if (!message || !type) return;
@@ -25,7 +30,7 @@
     toastTimer = setTimeout(() => $('notice').classList.add('hidden'), type === 'error' ? 4500 : 2400);
   };
   const signal = message => api.send(message).catch(() => {});
-  const peerState = () => signal({ type: 'peer-state', sharing: Boolean(localVideo), muted: s.muted, speaking: s.speaking && !s.muted, computerAudio: Boolean(outgoingSystem), sourceDucked: localDucked, duckEnabled: s.duckEnabled, duckDepth: s.duckDepth });
+  const peerState = () => signal({ type: 'peer-state', sharing: Boolean(localVideo), muted: s.muted, speaking: s.speaking && !s.muted, computerAudio: Boolean(outgoingSystem), sourceDucked: localDucked, duckEnabled: s.duckEnabled, duckDepth: s.duckDepth, recoveryVersion: 1 });
   const sendProfile = () => signal({ type: 'profile', displayName: localProfile.displayName, avatarData: localProfile.avatarData });
   function connection(label, connected = false) {
     $('connectionStatus').textContent = label;
@@ -98,7 +103,12 @@
       next = await Promise.race([pending, new Promise((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error('麦克风启动超时')); }, 8000); })]);
       await audioContext();
       if (generation !== micGeneration) { next.getTracks().forEach(t => t.stop()); return; }
-      if (tx) await tx.mic.sender.replaceTrack(next.getAudioTracks()[0]);
+      const currentTx = tx, currentPc = pc;
+      if (currentTx) await currentTx.mic.sender.replaceTrack(next.getAudioTracks()[0]);
+      if (generation !== micGeneration || !s.inRoom || pc !== currentPc || tx !== currentTx) {
+        if (currentTx && tx === currentTx) await currentTx.mic.sender.replaceTrack(null).catch(() => {});
+        next.getTracks().forEach(t => t.stop()); return;
+      }
       const previous = micStream;
       micMonitor?.dispose(); micStream = next; micMonitor = monitor(next); localGate.reset(); s.muted = false;
       previous?.getTracks().forEach(t => t.stop());
@@ -136,6 +146,8 @@
     $('inviteCard').classList.toggle('hidden', !s.inRoom);
     $('settingsButton').disabled = false;
     $('stopShare').classList.toggle('hidden', !localVideo);
+    $('retrySharedAudio').classList.toggle('hidden', !localVideo || !sharedAudioError);
+    $('retrySharedAudio').disabled = s.busy;
     $('shareScreen').classList.toggle('hidden', Boolean(localVideo));
     const receivingOnly = s.peer.sharing && !localVideo;
     $('duckEnabled').disabled = $('duckDepth').disabled = receivingOnly;
@@ -166,7 +178,50 @@
     $('shareStatus').textContent = show ? (s.peer.sharing ? '正在接收共享画面' : '正在共享 · 本地预览静音') : '未共享';
     $('stageHint').textContent = s.inRoom ? (pc ? '点击下方屏幕按钮，或等待对方共享。' : '等待对方加入，也可以先共享屏幕。') : '';
   }
+  function cancelRecovery() {
+    recoveryGeneration++;
+    clearTimeout(recoveryTimer); recoveryTimer = undefined; recoveryPending = false; recoveryAttempts = 0; recoveryReason = '';
+  }
+  function requestRecovery(reason, delay = 1000) {
+    if (!s.inRoom || !s.peerJoined || signalReconnecting || recoveryTimer || recoveryPending || recoveryAttempts >= 6) return;
+    recoveryReason = reason;
+    const current = pc, token = ++recoveryGeneration;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = undefined;
+      if (token !== recoveryGeneration || pc !== current || !s.inRoom || !s.peerJoined || signalReconnecting) return;
+      signalQueue = signalQueue.then(async () => {
+        if (token !== recoveryGeneration || pc !== current || !s.inRoom || signalReconnecting) return;
+        recoveryPending = true;
+        try {
+          connection('正在恢复音视频连接');
+          // One offerer coordinates recovery; older clients never initiate a
+          // restart, so a desktop guest can safely offer to those clients.
+          if (s.role !== 'host' && s.peer.recoveryVersion === 1) {
+            await signal({ type: 'recovery', action: 'request', sessionId: peerSession });
+          } else if (recoveryAttempts > 0 && s.peer.recoveryVersion === 1) {
+            const attempts = recoveryAttempts;
+            await buildPeer(true, true);
+            clearTimeout(recoveryTimer); recoveryTimer = undefined;
+            recoveryAttempts = attempts; recoveryPending = true; recoveryReason = reason;
+          } else if (current && current.signalingState === 'stable') {
+            await current.setLocalDescription(await current.createOffer({ iceRestart: true }));
+            if (pc === current) await signal({ type: 'description', description: current.localDescription.toJSON(), sessionId: peerSession });
+          }
+        } catch (error) { notify(`恢复连接失败：${error.message}`, 'error'); }
+        finally {
+          if (token !== recoveryGeneration) return;
+          recoveryPending = false;
+          if (s.inRoom && s.peerJoined && !signalReconnecting) {
+            recoveryAttempts++;
+            if (recoveryAttempts >= 6) { connection('自动恢复未成功，请重新加入'); notify('音视频恢复失败，请检查网络后重新加入。', 'error'); }
+            else requestRecovery(reason, Math.min(30000, 12000 + recoveryAttempts * 2000));
+          }
+        }
+      }).catch(error => notify(error.message, 'error'));
+    }, delay);
+  }
   function closePeer() {
+    cancelRecovery(); videoHealth.reset(); previousVideoSample = undefined; lastSentFrames = undefined; peerSession = '';
     if (pc) { pc.ontrack = pc.onconnectionstatechange = pc.onicecandidate = null; pc.close(); }
     pc = undefined; tx = undefined; s.candidates = [];
     remoteMic?.dispose(); remoteSystem?.dispose(); remoteMic = remoteSystem = remoteVideo = undefined;
@@ -192,8 +247,11 @@
     await tuneAudioSender(tx.mic?.sender, 96000);
     await tuneAudioSender(tx.system?.sender, 256000);
   }
-  async function buildPeer(initiator) {
+  async function buildPeer(initiator, recovering = false, sessionId = '') {
+    const previousPeer = s.peer;
     closePeer();
+    if (recovering) s.peer = previousPeer;
+    peerSession = sessionId || (initiator ? crypto.randomUUID() : '');
     const current = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' }); pc = current;
     // Only the offerer creates slots. The answerer uses the offered transceivers;
     // pre-creating answerer slots creates extra m-lines and breaks two-way audio.
@@ -201,7 +259,7 @@
       tx = { mic: current.addTransceiver('audio', { direction: 'sendrecv' }), system: current.addTransceiver('audio', { direction: 'sendrecv' }), video: current.addTransceiver('video', { direction: 'sendrecv' }) };
       preferOpus(tx.mic); preferOpus(tx.system);
     }
-    current.onicecandidate = event => { if (event.candidate) void signal({ type: 'candidate', candidate: event.candidate.toJSON() }); };
+    current.onicecandidate = event => { if (current === pc && event.candidate) void signal({ type: 'candidate', candidate: event.candidate.toJSON(), sessionId: peerSession }); };
     current.ontrack = event => {
       const stream = new MediaStream([event.track]);
       const attach = () => {
@@ -216,12 +274,13 @@
     current.onconnectionstatechange = () => {
       if (current !== pc) return;
       if (current.connectionState === 'connected') { connection('通话已连接', true); refreshVideo(); void configureAudio(); void configureVideo().catch(error => notify(error.message, 'error')); notify('双方可以说话。共享电脑声音时，不会把对方的声音重新传回去。', 'success'); }
-      else if (current.connectionState === 'failed') { connection('媒体连接失败'); notify('音视频无法直连。请确认两台电脑在同一局域网或同一 Tailscale 网络，并允许映伴通过防火墙，然后重新加入。', 'error'); }
-      else if (current.connectionState === 'disconnected') connection('网络中断，正在尝试恢复');
+      else if (current.connectionState === 'failed') { connection('媒体连接失败，正在恢复'); requestRecovery('connection'); }
+      else if (current.connectionState === 'disconnected') { connection('网络中断，正在尝试恢复'); requestRecovery('connection', 5000); }
     };
     if (tx) await attachTracks();
-    if (initiator) { await current.setLocalDescription(await current.createOffer()); await signal({ type: 'description', description: current.localDescription.toJSON() }); }
+    if (initiator) { await current.setLocalDescription(await current.createOffer()); await signal({ type: 'description', description: current.localDescription.toJSON(), sessionId: peerSession, reset: recovering }); }
     await peerState(); await sendProfile(); connection('正在建立媒体连接'); refreshVideo();
+    requestRecovery('connection', 15000);
   }
   async function attachTracks() {
     await tx.mic.sender.replaceTrack(micStream?.getAudioTracks()[0] || null);
@@ -230,20 +289,18 @@
     await configureAudio();
     await configureVideo();
   }
-  async function configureVideo() {
-    if (!tx?.video || !localVideo) return;
-    const sender = tx.video.sender, parameters = sender.getParameters();
-    // Before offer/answer completes there may be no negotiated encoding yet.
-    // The connected callback reapplies the selected profile in that case.
-    if (!parameters.encodings?.length) return;
-    parameters.degradationPreference = 'maintain-resolution';
-    for (const encoding of parameters.encodings) {
-      encoding.maxBitrate = videoProfile.bitrate;
-      encoding.maxFramerate = videoProfile.fps;
-      encoding.scaleResolutionDownBy = 1;
-    }
-    try { await sender.setParameters(parameters); }
-    catch { throw new Error('无法应用所选画质的编码设置，请停止共享后重试。'); }
+  function configureVideo() {
+    const sender = tx?.video?.sender, stream = localVideo;
+    const update = videoConfiguration.catch(() => {}).then(async () => {
+      if (!sender || !stream || tx?.video?.sender !== sender || localVideo !== stream) return;
+      const parameters = sender.getParameters();
+      if (!parameters.encodings?.length) return;
+      parameters.degradationPreference = 'maintain-resolution';
+      for (const encoding of parameters.encodings) Object.assign(encoding, videoAdaptation.encoding(videoProfile));
+      await sender.setParameters(parameters);
+    });
+    videoConfiguration = update;
+    return update;
   }
   function refreshQualityLabel() {
     const profile = videoProfiles[$('videoQuality').value] || videoProfiles['4k'];
@@ -257,29 +314,49 @@
     if (Number.isFinite(sample.fps)) parts.push(`${Math.round(sample.fps)} 帧/秒`);
     if (Number.isFinite(sample.mbps)) parts.push(`${sample.mbps.toFixed(1)} Mbps`);
     if (Number.isFinite(sample.rtt)) parts.push(`RTT ${sample.rtt} ms`);
+    if (direction === 'sending' && videoAdaptation.level) parts.push('已自动降低画质以保持流畅');
+    if (direction === 'receiving' && ['first-frame-timeout', 'stalled'].includes(videoHealth.status)) parts.push('画面恢复中');
     $('quality').textContent = parts.join(' · ');
     $('quality').title = `所选档位 ${profile.label}。显示实际采集或传输分辨率；静止画面会减少帧率和码率。`;
   }
   let signalQueue = Promise.resolve();
   api.onSignal(message => {
     signalQueue = signalQueue.then(async () => {
-      if (message.type === 'welcome') s.role = message.role;
+      if (message.type === 'welcome') { s.role = message.role; signalReconnecting = false; }
       else if (message.type === 'peer-ready') { if (s.inRoom) { s.peerJoined = true; controls(); refreshVideo(); await buildPeer(s.role === 'host'); } }
       else if (message.type === 'description' && s.inRoom) {
+        if (message.reset === true && message.description?.type === 'offer' && s.role === 'guest') await buildPeer(false, true, message.sessionId);
         if (!pc) await buildPeer(false);
+        if (message.sessionId && peerSession && message.sessionId !== peerSession) return;
+        if (message.sessionId) peerSession = message.sessionId;
         await pc.setRemoteDescription(message.description);
-        for (const candidate of s.candidates.splice(0)) await pc.addIceCandidate(candidate);
+        for (const item of s.candidates.splice(0)) {
+          if (!item.sessionId || item.sessionId === peerSession) await pc.addIceCandidate(item.candidate);
+        }
         if (message.description.type === 'offer') {
           const slots = pc.getTransceivers(); tx = { mic: slots[0], system: slots[1], video: slots[2] };
           preferOpus(tx.mic); preferOpus(tx.system);
           for (const slot of slots) slot.direction = 'sendrecv';
           await attachTracks();
-          await pc.setLocalDescription(await pc.createAnswer()); await signal({ type: 'description', description: pc.localDescription.toJSON() });
+          await pc.setLocalDescription(await pc.createAnswer()); await signal({ type: 'description', description: pc.localDescription.toJSON(), sessionId: peerSession });
         }
       } else if (message.type === 'candidate' && s.inRoom) {
-        if (pc?.remoteDescription) await pc.addIceCandidate(message.candidate); else s.candidates.push(message.candidate);
-      } else if (message.type === 'peer-state') {
-        s.peer = { sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(4, Math.min(18, message.duckDepth)) : 9 }; controls(); refreshVideo();
+        if (message.sessionId && peerSession && message.sessionId !== peerSession) return;
+        if (pc?.remoteDescription) await pc.addIceCandidate(message.candidate); else s.candidates.push({ candidate: message.candidate, sessionId: message.sessionId });
+      } else if (message.type === 'recovery' && s.inRoom && s.peerJoined) {
+        if (message.sessionId && message.sessionId !== peerSession) return;
+        if (message.action === 'health') {
+          videoHealth.sender(message.framesEncoded, performance.now());
+          if (message.receivingHealthy === true && recoveryReason === 'remote-video' && pc?.connectionState === 'connected') cancelRecovery();
+        }
+        else if (message.action === 'request' && s.role === 'host' && performance.now() - lastRecoveryRequest > 10000) {
+          lastRecoveryRequest = performance.now(); requestRecovery('remote-video');
+        }
+      } else if (message.type === 'reconnecting' && s.inRoom) {
+        signalReconnecting = true; cancelRecovery(); connection('网络中断，正在重新加入房间');
+      } else if (message.type === 'peer-state' && s.inRoom) {
+        if (s.peer.sharing !== (message.sharing === true)) videoHealth.reset(videoStats.framesDecoded || 0);
+        s.peer = { recoveryVersion: message.recoveryVersion === 1 ? 1 : 0, sharing: message.sharing === true, muted: message.muted === true, speaking: message.speaking === true && message.muted !== true, computerAudio: message.computerAudio === true, sourceDucked: message.sourceDucked === true, duckEnabled: message.duckEnabled === true, duckDepth: Number.isFinite(message.duckDepth) ? Math.max(4, Math.min(18, message.duckDepth)) : 9 }; controls(); refreshVideo();
       } else if (message.type === 'profile') {
         s.peerName = typeof message.displayName === 'string' ? message.displayName.trim().slice(0, 20) : '';
         s.peerAvatar = typeof message.avatarData === 'string' && message.avatarData.length <= 48000 && /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(message.avatarData) ? message.avatarData : '';
@@ -322,18 +399,48 @@
     } catch (error) { await endCall(); notify(error.message, 'error'); }
     finally { s.busy = false; controls(); refreshVideo(); }
   }
-  async function stopSharing() {
-    const previous = localVideo; localVideo = undefined;
-    audioScope = undefined;
-    videoStats = {}; previousVideoSample = undefined;
-    if (tx) { await tx.video.sender.replaceTrack(null).catch(() => {}); await tx.system.sender.replaceTrack(null).catch(() => {}); }
-    previous?.getTracks().forEach(t => { t.onended = null; t.stop(); });
-    outgoingSystem?.getTracks().forEach(t => t.stop()); outgoingSystem = undefined;
+  async function stopSharedAudio() {
+    sharedAudioGeneration++;
+    const previous = outgoingSystem; outgoingSystem = undefined; audioScope = undefined;
+    previous?.getTracks().forEach(t => t.stop());
     pcmNode?.disconnect(); pcmDestination?.disconnect(); pcmNode = pcmDestination = undefined;
-    await api.stopAudio(); localGain = localGainTarget = lastLocalTarget = 1; lastGainTime = performance.now(); localDucked = false; await peerState(); controls(); refreshVideo();
+    remainder = new Uint8Array(0);
+    if (tx) await tx.system.sender.replaceTrack(null).catch(() => {});
+    await api.stopAudio(); localGain = localGainTarget = lastLocalTarget = 1; lastGainTime = performance.now(); localDucked = false;
+    await peerState(); controls(); refreshVideo();
+  }
+  async function startSharedAudio() {
+    const stream = localVideo, generation = ++sharedAudioGeneration;
+    await audioContext();
+    if (!stream || localVideo !== stream || !s.inRoom || generation !== sharedAudioGeneration) return;
+    if (!moduleReady) moduleReady = ctx.audioWorklet.addModule('pcm-worklet.js');
+    await moduleReady;
+    if (localVideo !== stream || !s.inRoom || generation !== sharedAudioGeneration) return;
+    const node = new AudioWorkletNode(ctx, 'clearcall-pcm', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+    const destination = ctx.createMediaStreamDestination(); node.connect(destination); node.connect(silence);
+    const system = destination.stream; system.getAudioTracks()[0].contentHint = 'music';
+    const scope = (await api.startAudio($('audioApp').value)).scope;
+    if (localVideo !== stream || !s.inRoom || generation !== sharedAudioGeneration) {
+      system.getTracks().forEach(t => t.stop()); node.disconnect(); destination.disconnect(); return;
+    }
+    pcmNode = node; pcmDestination = destination; outgoingSystem = system; audioScope = scope;
+    if (tx) await tx.system.sender.replaceTrack(system.getAudioTracks()[0]);
+    sharedAudioError = ''; await peerState(); controls();
+  }
+  async function audioFailed(message) {
+    sharedAudioError = message || '共享声音中断';
+    await stopSharedAudio();
+    if (localVideo) notify(`${sharedAudioError}。画面继续共享，可点击“重试声音”。`, 'error');
+  }
+  async function stopSharing() {
+    const previous = localVideo; localVideo = undefined; sharedAudioError = '';
+    videoStats = {}; previousVideoSample = undefined; videoAdaptation.reset();
+    if (tx) await tx.video.sender.replaceTrack(null).catch(() => {});
+    previous?.getTracks().forEach(t => { t.onended = null; t.stop(); });
+    await stopSharedAudio();
   }
   async function endCall() {
-    s.inRoom = false; s.peerJoined = false; s.peerName = s.peerAvatar = ''; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
+    s.inRoom = false; signalReconnecting = false; cancelRecovery(); s.peerJoined = false; s.peerName = s.peerAvatar = ''; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
     await stopMicrophone();
     await api.leaveRoom();
     if (ctx) { await ctx.close().catch(() => {}); ctx = undefined; }
@@ -391,32 +498,32 @@
     if (!selectedSource || !s.inRoom || s.busy) return;
     const generation = s.generation, withAudio = $('includeAudio').checked;
     videoProfile = videoProfiles[$('videoQuality').value] || videoProfiles['4k'];
-    s.busy = true; $('sourceDialog').close(); controls();
+    s.busy = true; sharedAudioError = ''; videoAdaptation.reset(); $('sourceDialog').close(); controls();
+    let operationVideo;
     try {
-      await audioContext(); await api.selectSource(selectedSource);
-      localVideo = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: videoProfile.width }, height: { max: videoProfile.height }, frameRate: { ideal: videoProfile.fps, max: videoProfile.fps } }, audio: false });
-      if (!s.inRoom || generation !== s.generation) { await stopSharing(); return; }
-      const track = localVideo.getVideoTracks()[0]; track.contentHint = 'detail'; track.onended = () => { void stopSharing(); };
+      await api.selectSource(selectedSource);
+      operationVideo = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: videoProfile.width }, height: { max: videoProfile.height }, frameRate: { ideal: videoProfile.fps, max: videoProfile.fps } }, audio: false });
+      localVideo = operationVideo;
+      if (!s.inRoom || generation !== s.generation) { operationVideo.getTracks().forEach(t => { t.onended = null; t.stop(); }); if (localVideo === operationVideo) await stopSharing(); return; }
+      const track = operationVideo.getVideoTracks()[0]; track.contentHint = 'detail'; track.onended = () => { if (localVideo === operationVideo) void stopSharing(); };
       const native = track.getCapabilities();
       const nativeWidth = native.width?.max || track.getSettings().width;
       const nativeHeight = native.height?.max || track.getSettings().height;
       // Request detail up to the chosen ceiling, without upscaling a small window.
       const scale = Math.min(1, videoProfile.width / nativeWidth, videoProfile.height / nativeHeight);
       await track.applyConstraints({ width: { ideal: Math.floor(nativeWidth * scale), max: videoProfile.width }, height: { ideal: Math.floor(nativeHeight * scale), max: videoProfile.height }, frameRate: { ideal: videoProfile.fps, max: videoProfile.fps } });
-      if (withAudio) {
-        if (!moduleReady) moduleReady = ctx.audioWorklet.addModule('pcm-worklet.js'); await moduleReady;
-        pcmNode = new AudioWorkletNode(ctx, 'clearcall-pcm', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
-        pcmDestination = ctx.createMediaStreamDestination(); pcmNode.connect(pcmDestination); pcmNode.connect(silence);
-        outgoingSystem = pcmDestination.stream; outgoingSystem.getAudioTracks()[0].contentHint = 'music';
-        audioScope = (await api.startAudio($('audioApp').value)).scope;
-      }
-      if (!s.inRoom || generation !== s.generation) { await stopSharing(); return; }
+      if (!s.inRoom || generation !== s.generation) { operationVideo.getTracks().forEach(t => { t.onended = null; t.stop(); }); if (localVideo === operationVideo) await stopSharing(); return; }
       if (tx) {
         await tx.video.sender.replaceTrack(track); await tx.system.sender.replaceTrack(outgoingSystem?.getAudioTracks()[0] || null);
         await configureVideo();
       }
-      await peerState();
-    } catch (error) { await stopSharing(); notify(`共享未启动：${error.message}`, 'error'); }
+      await peerState(); refreshVideo();
+      if (withAudio) await startSharedAudio().catch(error => audioFailed(error.message));
+    } catch (error) {
+      if (localVideo === operationVideo) await stopSharing();
+      else operationVideo?.getTracks().forEach(t => { t.onended = null; t.stop(); });
+      notify(`共享未启动：${error.message}`, 'error');
+    }
     finally { s.busy = false; controls(); refreshVideo(); }
   }
   let remainder = new Uint8Array(0);
@@ -428,7 +535,7 @@
     for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
     remainder = joined.slice(length); if (samples.length) pcmNode.port.postMessage(samples, [samples.buffer]);
   });
-  api.onAudioEnded(({ message } = {}) => { if (s.inRoom && outgoingSystem) void stopSharing().then(() => notify(message || '电脑声音采集中断，共享已停止。请检查音频设备后重试。', 'error')); });
+  api.onAudioEnded(({ message } = {}) => { if (s.inRoom && outgoingSystem) void audioFailed(message).catch(error => notify(error.message, 'error')); });
   api.onDucked(({ gain }) => { localDucked = gain < 0.999; void peerState(); });
   function level(node) {
     if (!node) return 0;
@@ -465,24 +572,39 @@
   }
   setInterval(updateAudio, 50);
   setInterval(async () => {
-    if (pc?.connectionState !== 'connected') { refreshQualityLabel(); return; }
-    const current = pc;
+    if (statsBusy || pc?.connectionState !== 'connected') { refreshQualityLabel(); return; }
+    const current = pc; statsBusy = true;
     try {
       const reports = await current.getStats();
       if (pc !== current) return;
-      const receiving = s.peer.sharing, type = receiving ? 'inbound-rtp' : 'outbound-rtp';
+      const now = performance.now(), receiving = s.peer.sharing;
       const rows = Array.from(reports.values());
-      const video = rows.find(r => r.type === type && r.kind === 'video' && !r.isRemote);
+      const inbound = rows.find(r => r.type === 'inbound-rtp' && r.kind === 'video' && !r.isRemote);
+      const outbound = rows.find(r => r.type === 'outbound-rtp' && r.kind === 'video' && !r.isRemote);
+      const video = receiving ? inbound : outbound;
       const pair = rows.find(r => r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated);
+      const health = videoHealth.sample({ sharing: receiving, connected: true, framesDecoded: inbound?.framesDecoded }, now);
+      if (health === 'first-frame-timeout' || health === 'stalled') requestRecovery('video');
+      else if (recoveryReason !== 'remote-video' && (health === 'healthy' || !receiving)) cancelRecovery();
+      if (s.peer.recoveryVersion === 1) void signal({ type: 'recovery', action: 'health', sessionId: peerSession, framesEncoded: localVideo ? outbound?.framesEncoded : undefined, receivingHealthy: receiving && health === 'healthy' });
+      const active = localVideo && lastSentFrames !== undefined && outbound?.framesEncoded > lastSentFrames;
+      lastSentFrames = localVideo ? outbound?.framesEncoded : undefined;
+      const remote = outbound?.remoteId ? reports.get(outbound.remoteId) : undefined;
+      if (videoAdaptation.sample({ active, limited: outbound?.qualityLimitationReason, loss: remote?.fractionLost, rtt: (pair?.currentRoundTripTime || 0) * 1000 }, now)) {
+        await configureVideo().catch(error => notify(`自动画质调整失败：${error.message}`, 'error'));
+      }
       if (video) {
         const bytes = receiving ? video.bytesReceived : video.bytesSent;
         const previous = previousVideoSample;
         const mbps = previous?.id === video.id && video.timestamp > previous.time ? Math.max(0, (bytes - previous.bytes) * 8 / (video.timestamp - previous.time) / 1000) : undefined;
         previousVideoSample = { id: video.id, time: video.timestamp, bytes };
-        videoStats = { direction: receiving ? 'receiving' : 'sending', width: video.frameWidth, height: video.frameHeight, fps: video.framesPerSecond, mbps, rtt: pair ? Math.round((pair.currentRoundTripTime || 0) * 1000) : undefined, limitation: video.qualityLimitationReason, codec: reports.get(video.codecId)?.mimeType };
+        videoStats = { direction: receiving ? 'receiving' : 'sending', width: video.frameWidth, height: video.frameHeight, fps: video.framesPerSecond, mbps, rtt: pair ? Math.round((pair.currentRoundTripTime || 0) * 1000) : undefined, limitation: video.qualityLimitationReason, codec: reports.get(video.codecId)?.mimeType, framesDecoded: inbound?.framesDecoded, framesEncoded: outbound?.framesEncoded, health, adaptation: videoAdaptation.level };
       }
+      const element = $('screenVideo');
+      if (receiving && element.srcObject && element.paused && (!document.hidden || document.pictureInPictureElement)) void element.play().catch(() => {});
       refreshQualityLabel();
     } catch { }
+    finally { statsBusy = false; }
   }, 1000);
   $('createRoom').addEventListener('click', () => { void begin('create'); });
   $('joinRoom').addEventListener('click', () => { void begin('join'); });
@@ -497,6 +619,13 @@
   $('outputDevice').addEventListener('change', () => { void setOutputDevice($('outputDevice').value); });
   $('shareScreen').addEventListener('click', () => { void openSources(); });
   $('stopShare').addEventListener('click', () => { void stopSharing(); });
+  $('retrySharedAudio').addEventListener('click', async () => {
+    if (s.busy || !localVideo || !s.inRoom) return;
+    s.busy = true; controls();
+    try { await startSharedAudio(); }
+    catch (error) { await audioFailed(error.message); }
+    finally { s.busy = false; controls(); }
+  });
   $('closeDialog').addEventListener('click', () => $('sourceDialog').close());
   $('settingsButton').addEventListener('click', () => { void api.openSettings(); });
   $('homeSettings').addEventListener('click', () => { void api.openSettings(); });
@@ -559,6 +688,6 @@
   setInterval(() => { if (settingsVisible) void api.reportStatus({ mic: Boolean(micStream), connected: pc?.connectionState === 'connected', speaking: s.speaking, remoteSpeaking: Boolean(s.peer.speaking), remoteMuted: s.peer.muted, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharing: Boolean(localVideo), peerSharing: s.peer.sharing, peerDuckEnabled: s.peer.duckEnabled, peerDuckDepth: s.peer.duckDepth, ducking: localDucked || s.peer.sourceDucked }); }, 200);
   api.info().then(result => { info = result; document.body.dataset.platform = result.platform; }).catch(() => {}); void devices().catch(() => {}); controls();
   navigator.mediaDevices.addEventListener('devicechange', () => { void devices().catch(() => {}); });
-  window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, encoder: tx?.video.sender.getParameters(), audioEncodings: { mic: tx?.mic?.sender.getParameters().encodings, system: tx?.system?.sender.getParameters().encodings } });
+  window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, recovery: { attempts: recoveryAttempts, pending: recoveryPending || Boolean(recoveryTimer), reason: recoveryReason, sessionId: peerSession, health: videoHealth.status, signalReconnecting }, encoder: tx?.video.sender.getParameters(), audioEncodings: { mic: tx?.mic?.sender.getParameters().encodings, system: tx?.system?.sender.getParameters().encodings } });
   window.clearcallMediaStats = async () => pc ? Array.from((await pc.getStats()).values()).filter(r => ['inbound-rtp', 'outbound-rtp', 'media-source'].includes(r.type)).map(r => ({ type: r.type, kind: r.kind, mid: r.mid, audioLevel: r.audioLevel, totalAudioEnergy: r.totalAudioEnergy, packetsReceived: r.packetsReceived, packetsSent: r.packetsSent, bytesSent: r.bytesSent })) : [];
 })();

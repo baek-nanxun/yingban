@@ -3,7 +3,7 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { networkInterfaces } = require('node:os');
 const dgram = require('node:dgram');
 
-const TYPES = new Set(['description', 'candidate', 'peer-state', 'profile']);
+const TYPES = new Set(['description', 'candidate', 'peer-state', 'profile', 'recovery']);
 function parseInvite(input) {
   let url;
   try { url = new URL(input.trim()); } catch { throw new Error('邀请链接无效。'); }

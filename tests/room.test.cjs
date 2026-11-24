@@ -44,6 +44,8 @@ test('two peers relay separate media signaling, reject a third peer and notify d
   a.send(JSON.stringify({ type: 'description', description: { type: 'offer', sdp: 'test' } }));
   assert.equal((await received(b, 'description')).description.sdp, 'test');
   assert.equal(a.messages.some(m => m.type === 'description'), false);
+  b.send(JSON.stringify({ type: 'recovery', action: 'request', sessionId: 'test-session' }));
+  assert.equal((await received(a, 'recovery')).sessionId, 'test-session');
   const third = new WebSocket(url); const [code, reason] = await once(third, 'close');
   assert.equal(code, 1008); assert.equal(reason.toString(), 'Room full');
   b.close(); await received(a, 'peer-left');
