@@ -12,7 +12,22 @@ async function open(name) {
   await app.evaluate(({ ipcMain }) => {
     ipcMain.removeHandler('sources:list'); ipcMain.handle('sources:list', () => [{ id: 'screen:test', kind: 'screen', name: 'Stability test screen' }]);
     ipcMain.removeHandler('sources:select'); ipcMain.handle('sources:select', () => {});
-    ipcMain.removeHandler('audio:start'); ipcMain.handle('audio:start', () => ({ scope: { kind: 'screen' } }));
+    ipcMain.removeHandler('audio:start'); ipcMain.handle('audio:start', event => {
+      global.audioStarts = (global.audioStarts || 0) + 1;
+      if (global.failAudio) throw new Error('Injected unavailable audio source');
+      let frame = 0;
+      clearInterval(global.audioTimer);
+      global.audioTimer = setInterval(() => {
+        const data = Buffer.alloc(3840);
+        for (let i = 0; i < 960; i++) {
+          const value = Math.round(Math.sin(frame++ * 2 * Math.PI * 440 / 48000) * 8000);
+          data.writeInt16LE(value, i * 4); data.writeInt16LE(value, i * 4 + 2);
+        }
+        if (!event.sender.isDestroyed()) event.sender.send('audio:pcm', data);
+      }, 20);
+      return { scope: { kind: 'screen' } };
+    });
+    ipcMain.removeHandler('audio:stop'); ipcMain.handle('audio:stop', () => { clearInterval(global.audioTimer); });
   });
   await page.evaluate(() => {
     window.testPeers = []; window.testOffers = 0;
@@ -64,15 +79,18 @@ async function open(name) {
     await host.page.locator('#shareScreen').click(); await host.page.locator('.source-item').first().click(); await host.page.locator('#confirmShare').click();
     await guest.page.waitForFunction(() => window.clearcallDiagnostics().videoStats.framesDecoded > 5);
     assert.equal((await host.page.evaluate(() => window.clearcallDiagnostics())).computerAudio, true);
-    await host.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).webContents.send('audio:ended', { message: '测试声音中断' }));
+    await guest.page.waitForFunction(() => window.clearcallDiagnostics().sharedLevel > 0.01);
+    await host.app.evaluate(({ BrowserWindow }) => { clearInterval(global.audioTimer); BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).webContents.send('audio:ended', { message: '测试声音中断' }); });
     await host.page.locator('#retrySharedAudio').waitFor({ state: 'visible' });
     let state = await host.page.evaluate(() => window.clearcallDiagnostics());
     assert.equal(state.sharing, true); assert.equal(state.computerAudio, false); assert.equal(state.mic, true);
-    await host.page.locator('#retrySharedAudio').click();
+    await guest.page.waitForFunction(() => window.clearcallDiagnostics().sharedLevel < 0.001);
     await host.page.waitForFunction(() => window.clearcallDiagnostics().computerAudio);
+    await guest.page.waitForFunction(() => window.clearcallDiagnostics().sharedLevel > 0.01);
+    assert.equal(await host.app.evaluate(() => global.audioStarts), 2);
     await host.page.screenshot({ path: '/tmp/yingban-stability-host.png' });
     await guest.page.screenshot({ path: '/tmp/yingban-stability-viewer.png' });
-    console.log('PASS: real peer media, audio failure isolation and retry preserve video and microphone.');
+    console.log('PASS: remote audio falls silent after helper exit, then automatically becomes audible again; video and microphone survive.');
 
     await guest.page.evaluate(async () => {
       const peer = window.testPeers.at(-1), stats = await peer.getStats();
@@ -91,15 +109,26 @@ async function open(name) {
     assert.equal(await guest.page.evaluate(() => window.testPeers.length), peersBefore);
     console.log('PASS: static screen remains connected without needless peer rebuilds.');
     await host.page.locator('#stopShare').click();
-    await host.app.evaluate(({ ipcMain }) => { ipcMain.removeHandler('audio:start'); ipcMain.handle('audio:start', () => { throw new Error('Injected unavailable audio source'); }); });
+    await host.app.evaluate(() => { global.failAudio = true; });
     await host.page.locator('#shareScreen').click(); await host.page.locator('.source-item').first().click(); await host.page.locator('#confirmShare').click();
     await host.page.locator('#retrySharedAudio').waitFor({ state: 'visible' });
     await guest.page.waitForFunction(() => window.clearcallDiagnostics().peerSharing && window.clearcallDiagnostics().videoStats.health === 'healthy');
     assert.equal((await host.page.evaluate(() => window.clearcallDiagnostics())).sharing, true);
     console.log('PASS: audio startup failure still delivers video.');
+    await host.app.evaluate(() => { global.failAudio = false; });
+    await guest.page.waitForFunction(() => window.clearcallDiagnostics().sharedLevel > 0.01);
+    await host.app.evaluate(({ BrowserWindow }) => { clearInterval(global.audioTimer); global.failAudio = true; BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).webContents.send('audio:ended', { message: '测试停止后不重启' }); });
+    await host.page.locator('#retrySharedAudio').waitFor({ state: 'visible' });
+    await host.page.locator('#stopShare').click();
+    await host.page.waitForFunction(() => !window.clearcallDiagnostics().sharing);
+    const startsAtStop = await host.app.evaluate(() => global.audioStarts);
+    await host.app.evaluate(() => { global.failAudio = false; });
+    await host.page.waitForFunction(start => performance.now() - start > 11000, await host.page.evaluate(() => performance.now()), { timeout: 15000 });
+    assert.equal(await host.app.evaluate(() => global.audioStarts), startsAtStop);
+    console.log('PASS: unavailable source automatically recovers; stopping during backoff cancels further attempts.');
     await guest.page.locator('#leaveRoom').click();
     await guest.page.waitForFunction(() => !window.clearcallDiagnostics().inRoom);
-    assert.equal(await host.page.evaluate(() => window.testCapture.readyState), 'live');
+    assert.equal(await host.page.evaluate(() => window.testCapture.readyState), 'ended');
     assert.deepEqual(errors, []);
     console.log('PASS: explicit leave ends the session without restarting it.');
   } catch (error) {

@@ -8,25 +8,38 @@ const { pactl, verifyTools, listStreams, findSavedInput, volumeForGain, volumesE
 
 const FRAME_BYTES = 48000 * 2 * 2 / 50; // 20 ms, stereo s16le
 const MAX_BUFFER = FRAME_BYTES * 6;
+const MAX_FAILURES = 8;
+const HEALTHY_LANE_MS = 3000;
+const retryDelay = failures => Math.min(300 * 2 ** (failures - 1), 2000);
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 let owner, scope;
 try {
   owner = Number(process.argv[2]); scope = JSON.parse(process.argv[3]);
   if (!Number.isSafeInteger(owner) || owner <= 0 || !scope || !['screen', 'app'].includes(scope.kind) || (scope.kind === 'app' && (typeof scope.appKey !== 'string' || scope.appKey.length > 2048))) throw new Error();
 } catch { process.stderr.write('ERROR 无效的声音共享范围。\n'); process.exit(1); }
 
-const lanes = new Map(), saved = new Map();
-let gain = 1, appliedGain = 1, refreshTimer, mixerTimer, refreshing, refreshPending = false, closing = false, stopping, failures = 0;
+const lanes = new Map(), saved = new Map(), laneRetries = new Map();
+let gain = 1, appliedGain = 1, refreshTimer, mixerTimer, refreshing, refreshPending = false, closing = false, stopping, refreshFailures = 0, refreshNotBefore = 0;
 const selected = stream => scope.kind === 'screen' || stream.appKey === scope.appKey;
-function terminateLane(lane) { lane.process.stdout.removeAllListeners('data'); lane.process.kill(); lane.buffer = Buffer.alloc(0); }
+function terminateLane(lane) { lane.confirmed = false; lane.process.stdout.removeAllListeners('data'); lane.process.kill(); lane.buffer = Buffer.alloc(0); }
+function invalidateLanes() {
+  // A failed metadata lookup must revoke existing authorization, including
+  // buffered PCM. Recreated lanes need a second successful snapshot to confirm.
+  const previous = [...lanes.values()];
+  lanes.clear();
+  for (const lane of previous) terminateLane(lane);
+}
 
 function attach(stream) {
   const child = spawn('parec', [
     '--raw', '--format=s16le', '--rate=48000', '--channels=2', '--latency-msec=40', '--process-time-msec=20',
     `--device=${stream.monitor}`, `--monitor-stream=${stream.index}`, '--client-name=YingBan Audio Capture'
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const lane = { process: child, stream, confirmed: false, buffer: Buffer.alloc(0) };
+  const lane = { process: child, stream, confirmed: false, healthySince: null, buffer: Buffer.alloc(0) };
   child.stdout.on('data', data => {
     if (!lane.confirmed || closing) return;
+    lane.healthySince ??= Date.now();
+    if (Date.now() - lane.healthySince >= HEALTHY_LANE_MS) laneRetries.delete(stream.identity);
     lane.buffer = Buffer.concat([lane.buffer, data]);
     if (lane.buffer.length > MAX_BUFFER) {
       const excess = Math.ceil((lane.buffer.length - MAX_BUFFER) / 4) * 4;
@@ -38,7 +51,12 @@ function attach(stream) {
   child.on('exit', () => {
     if (lanes.get(stream.identity) !== lane) return;
     lanes.delete(stream.identity);
-    if (!closing && ++failures >= 8) fail(new Error('无法连接应用的独立音频，请检查 PipeWire 后重试。'));
+    if (closing) return;
+    const failures = (laneRetries.get(stream.identity)?.failures || 0) + 1;
+    laneRetries.set(stream.identity, { failures, nextAttempt: Date.now() + retryDelay(failures) });
+    // Removal is normal stream churn. Only charge this failure if the next
+    // metadata snapshot still authorizes the same stream.
+    scheduleRefresh();
   });
   lanes.set(stream.identity, lane);
 }
@@ -46,8 +64,8 @@ async function setVolume(index, volume) { await pactl('set-sink-input-volume', S
 async function applyVolume(stream, savedVolume, targetGain) {
   if (!volumesEqual(stream.volume, savedVolume.applied)) savedVolume.original = stream.volume.slice();
   const target = volumeForGain(savedVolume.original, targetGain);
-  savedVolume.applied = target;
   if (!volumesEqual(stream.volume, target)) await setVolume(stream.index, target);
+  savedVolume.applied = target;
   stream.volume = target;
 }
 async function restoreOne(stream, previous) {
@@ -68,7 +86,13 @@ async function refresh() {
     if (!now || now.sink !== lane.stream.sink || now.monitor !== lane.stream.monitor) { lanes.delete(id); terminateLane(lane); }
     else { lane.stream = now; lane.confirmed = true; }
   }
-  for (const stream of wanted) if (!lanes.has(stream.identity)) attach(stream);
+  for (const id of laneRetries.keys()) if (!byId.has(id)) laneRetries.delete(id);
+  for (const stream of wanted) {
+    if (lanes.has(stream.identity)) continue;
+    const retry = laneRetries.get(stream.identity);
+    if (retry?.failures >= MAX_FAILURES) { fail(new Error('无法连接应用的独立音频，请检查 PipeWire 后重试。')); return; }
+    if (!retry || Date.now() >= retry.nextAttempt) attach(stream);
+  }
 
   const allById = new Map(all.map(stream => [stream.identity, stream]));
   for (const [id, previous] of saved) {
@@ -94,11 +118,19 @@ function scheduleRefresh(delay = 0) {
   clearTimeout(refreshTimer);
   if (refreshing) { refreshPending = true; return; }
   refreshTimer = setTimeout(() => {
-    refreshing = refresh().catch(fail).finally(() => {
+    refreshing = refresh().then(() => {
+      refreshFailures = 0; refreshNotBefore = 0;
+    }).catch(error => {
+      invalidateLanes();
+      if (closing) return;
+      if (++refreshFailures >= MAX_FAILURES) { fail(error); return; }
+      refreshNotBefore = Date.now() + retryDelay(refreshFailures);
+      process.stderr.write(`RETRY Linux audio refresh ${refreshFailures}/${MAX_FAILURES}\n`);
+    }).finally(() => {
       refreshing = null;
       if (!closing) { const delayNext = refreshPending ? 0 : 300; refreshPending = false; scheduleRefresh(delayNext); }
     });
-  }, delay);
+  }, Math.max(delay, refreshNotBefore - Date.now()));
 }
 function mix() {
   if (closing || process.stdout.writableNeedDrain) return;
@@ -130,21 +162,28 @@ async function restoreSaved() {
   }
   catch { return; }
   if (!Array.isArray(inputs) || !Array.isArray(clients)) return;
-  await Promise.allSettled([...saved.values()].map(async previous => {
+  await Promise.allSettled([...saved].map(async ([id, previous]) => {
     const input = findSavedInput(inputs, clients, previous);
-    if (!input) return;
+    if (!input) { saved.delete(id); return; }
     const volume = Object.values(input.volume || {}).map(channel => Number(channel.value));
     if (!volume.length || volume.some(value => !Number.isSafeInteger(value) || value < 0)) return;
-    try { await restoreOne({ index: previous.index, volume }, previous); } catch {}
+    await restoreOne({ index: previous.index, volume }, previous);
+    saved.delete(id);
   }));
-  saved.clear();
 }
 function stop(code = 0) {
   if (stopping) return stopping;
   closing = true; clearTimeout(refreshTimer); clearInterval(mixerTimer);
-  for (const lane of lanes.values()) terminateLane(lane);
-  lanes.clear();
-  stopping = (async () => { if (refreshing) await refreshing; await restoreSaved(); process.exit(code); })();
+  invalidateLanes();
+  stopping = (async () => {
+    if (refreshing) await refreshing;
+    for (let attempt = 0; attempt < 3 && saved.size; attempt++) {
+      if (attempt) await delay(150);
+      await restoreSaved();
+    }
+    if (saved.size) process.stderr.write('WARN 无法恢复部分应用音量，请检查 Linux 音频服务。\n');
+    process.exit(code);
+  })();
   return stopping;
 }
 function fail(error) { if (closing) return; process.stderr.write(`ERROR ${String(error.message || error).replace(/[\r\n]/g, ' ')}\n`); void stop(1); }

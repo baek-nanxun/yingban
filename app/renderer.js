@@ -20,7 +20,15 @@
   let videoProfile = videoProfiles['4k'], videoStats = {}, previousVideoSample;
   const videoHealth = new window.VideoHealth(), videoAdaptation = new window.VideoAdaptation();
   let recoveryTimer, recoveryGeneration = 0, recoveryAttempts = 0, recoveryPending = false, recoveryReason = '', signalReconnecting = false;
-  let sharedAudioGeneration = 0;
+  let sharedAudioStatus = 'stopped';
+  const audioRecovery = new window.AudioRecovery({
+    start: startSharedAudio, stop: stopSharedAudio,
+    status(state, message = '', delay = 0) {
+      sharedAudioStatus = state; sharedAudioError = message;
+      if (state === 'retrying') notify(`${message}。画面继续共享，${delay / 1000} 秒后自动恢复声音。`, 'error');
+      controls(); refreshVideo();
+    }
+  });
   let peerSession = '', lastRecoveryRequest = -Infinity, statsBusy = false, lastSentFrames, sharedAudioError = '';
   let videoConfiguration = Promise.resolve();
   const localGate = new window.SpeechGate(), remoteGate = new window.SpeechGate();
@@ -147,7 +155,7 @@
     $('settingsButton').disabled = false;
     $('stopShare').classList.toggle('hidden', !localVideo);
     $('retrySharedAudio').classList.toggle('hidden', !localVideo || !sharedAudioError);
-    $('retrySharedAudio').disabled = s.busy;
+    $('retrySharedAudio').disabled = s.busy || audioRecovery.pending;
     $('shareScreen').classList.toggle('hidden', Boolean(localVideo));
     const receivingOnly = s.peer.sharing && !localVideo;
     $('duckEnabled').disabled = $('duckDepth').disabled = receivingOnly;
@@ -400,44 +408,43 @@
     finally { s.busy = false; controls(); refreshVideo(); }
   }
   async function stopSharedAudio() {
-    sharedAudioGeneration++;
-    const previous = outgoingSystem; outgoingSystem = undefined; audioScope = undefined;
+    const previous = outgoingSystem || pcmDestination?.stream; outgoingSystem = undefined; audioScope = undefined;
     previous?.getTracks().forEach(t => t.stop());
-    pcmNode?.disconnect(); pcmDestination?.disconnect(); pcmNode = pcmDestination = undefined;
+    if (pcmNode) { pcmNode.onprocessorerror = null; pcmNode.disconnect(); }
+    pcmDestination?.disconnect(); pcmNode = pcmDestination = undefined;
     remainder = new Uint8Array(0);
     if (tx) await tx.system.sender.replaceTrack(null).catch(() => {});
     await api.stopAudio(); localGain = localGainTarget = lastLocalTarget = 1; lastGainTime = performance.now(); localDucked = false;
     await peerState(); controls(); refreshVideo();
   }
-  async function startSharedAudio() {
-    const stream = localVideo, generation = ++sharedAudioGeneration;
+  async function startSharedAudio({ stream, appKey }, isCurrent) {
+    const active = () => isCurrent() && s.inRoom && localVideo === stream;
     await audioContext();
-    if (!stream || localVideo !== stream || !s.inRoom || generation !== sharedAudioGeneration) return;
-    if (!moduleReady) moduleReady = ctx.audioWorklet.addModule('pcm-worklet.js');
+    if (!active()) return;
+    if (!moduleReady) moduleReady = ctx.audioWorklet.addModule('pcm-worklet.js').catch(error => { moduleReady = undefined; throw error; });
     await moduleReady;
-    if (localVideo !== stream || !s.inRoom || generation !== sharedAudioGeneration) return;
-    const node = new AudioWorkletNode(ctx, 'clearcall-pcm', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
-    const destination = ctx.createMediaStreamDestination(); node.connect(destination); node.connect(silence);
-    const system = destination.stream; system.getAudioTracks()[0].contentHint = 'music';
-    const scope = (await api.startAudio($('audioApp').value)).scope;
-    if (localVideo !== stream || !s.inRoom || generation !== sharedAudioGeneration) {
-      system.getTracks().forEach(t => t.stop()); node.disconnect(); destination.disconnect(); return;
-    }
-    pcmNode = node; pcmDestination = destination; outgoingSystem = system; audioScope = scope;
+    if (!active()) return;
+    // Assign resources before starting the helper so startup failure cleanup
+    // also releases the worklet and destination instead of leaking each retry.
+    pcmNode = new AudioWorkletNode(ctx, 'clearcall-pcm', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+    pcmDestination = ctx.createMediaStreamDestination(); pcmNode.connect(pcmDestination); pcmNode.connect(silence);
+    const node = pcmNode, system = pcmDestination.stream;
+    system.getAudioTracks()[0].contentHint = 'music';
+    node.onprocessorerror = () => { if (active() && pcmNode === node) void audioRecovery.failed('声音处理异常'); };
+    const result = await api.startAudio(appKey);
+    if (!active()) return;
+    outgoingSystem = system; audioScope = result.scope;
     if (tx) await tx.system.sender.replaceTrack(system.getAudioTracks()[0]);
-    sharedAudioError = ''; await peerState(); controls();
-  }
-  async function audioFailed(message) {
-    sharedAudioError = message || '共享声音中断';
-    await stopSharedAudio();
-    if (localVideo) notify(`${sharedAudioError}。画面继续共享，可点击“重试声音”。`, 'error');
+    if (!active()) return;
+    await configureAudio(); await peerState(); controls();
   }
   async function stopSharing() {
     const previous = localVideo; localVideo = undefined; sharedAudioError = '';
     videoStats = {}; previousVideoSample = undefined; videoAdaptation.reset();
+    const audioStopped = audioRecovery.stop();
     if (tx) await tx.video.sender.replaceTrack(null).catch(() => {});
     previous?.getTracks().forEach(t => { t.onended = null; t.stop(); });
-    await stopSharedAudio();
+    await audioStopped;
   }
   async function endCall() {
     s.inRoom = false; signalReconnecting = false; cancelRecovery(); s.peerJoined = false; s.peerName = s.peerAvatar = ''; s.generation++; $('sourceDialog').close(); await stopSharing(); closePeer();
@@ -518,7 +525,7 @@
         await configureVideo();
       }
       await peerState(); refreshVideo();
-      if (withAudio) await startSharedAudio().catch(error => audioFailed(error.message));
+      if (withAudio && localVideo === operationVideo && s.inRoom && generation === s.generation) await audioRecovery.begin({ stream: operationVideo, appKey: $('audioApp').value });
     } catch (error) {
       if (localVideo === operationVideo) await stopSharing();
       else operationVideo?.getTracks().forEach(t => { t.onended = null; t.stop(); });
@@ -535,7 +542,7 @@
     for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
     remainder = joined.slice(length); if (samples.length) pcmNode.port.postMessage(samples, [samples.buffer]);
   });
-  api.onAudioEnded(({ message } = {}) => { if (s.inRoom && outgoingSystem) void audioFailed(message).catch(error => notify(error.message, 'error')); });
+  api.onAudioEnded(({ message } = {}) => { if (s.inRoom && localVideo) void audioRecovery.failed(message); });
   api.onDucked(({ gain }) => { localDucked = gain < 0.999; void peerState(); });
   function level(node) {
     if (!node) return 0;
@@ -622,8 +629,8 @@
   $('retrySharedAudio').addEventListener('click', async () => {
     if (s.busy || !localVideo || !s.inRoom) return;
     s.busy = true; controls();
-    try { await startSharedAudio(); }
-    catch (error) { await audioFailed(error.message); }
+    try { await audioRecovery.retry(); }
+    catch (error) { notify(error.message, 'error'); }
     finally { s.busy = false; controls(); }
   });
   $('closeDialog').addEventListener('click', () => $('sourceDialog').close());
@@ -688,6 +695,6 @@
   setInterval(() => { if (settingsVisible) void api.reportStatus({ mic: Boolean(micStream), connected: pc?.connectionState === 'connected', speaking: s.speaking, remoteSpeaking: Boolean(s.peer.speaking), remoteMuted: s.peer.muted, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharing: Boolean(localVideo), peerSharing: s.peer.sharing, peerDuckEnabled: s.peer.duckEnabled, peerDuckDepth: s.peer.duckDepth, ducking: localDucked || s.peer.sourceDucked }); }, 200);
   api.info().then(result => { info = result; document.body.dataset.platform = result.platform; }).catch(() => {}); void devices().catch(() => {}); controls();
   navigator.mediaDevices.addEventListener('devicechange', () => { void devices().catch(() => {}); });
-  window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, recovery: { attempts: recoveryAttempts, pending: recoveryPending || Boolean(recoveryTimer), reason: recoveryReason, sessionId: peerSession, health: videoHealth.status, signalReconnecting }, encoder: tx?.video.sender.getParameters(), audioEncodings: { mic: tx?.mic?.sender.getParameters().encodings, system: tx?.system?.sender.getParameters().encodings } });
+  window.clearcallDiagnostics = () => ({ inRoom: s.inRoom, role: s.role, connection: pc?.connectionState || 'none', mic: Boolean(micStream), muted: s.muted, sharing: Boolean(localVideo), computerAudio: Boolean(outgoingSystem), peerSharing: s.peer.sharing, localDucked, peerSourceDucked: s.peer.sourceDucked, localLevel: level(micMonitor), remoteLevel: level(remoteMic), sharedLevel: level(remoteSystem), context: ctx?.state, remoteTracks: pc?.getReceivers().map(x => ({ kind: x.track.kind, muted: x.track.muted, state: x.track.readyState })), sharedGain: remoteSystem?.gain.gain.value, screen: { width: $('screenVideo').videoWidth, height: $('screenVideo').videoHeight }, audioScope, audioRecovery: { state: sharedAudioStatus, attempts: audioRecovery.attempts, error: sharedAudioError }, capture: localVideo?.getVideoTracks()[0]?.getSettings(), videoProfile, videoStats, recovery: { attempts: recoveryAttempts, pending: recoveryPending || Boolean(recoveryTimer), reason: recoveryReason, sessionId: peerSession, health: videoHealth.status, signalReconnecting }, encoder: tx?.video.sender.getParameters(), audioEncodings: { mic: tx?.mic?.sender.getParameters().encodings, system: tx?.system?.sender.getParameters().encodings } });
   window.clearcallMediaStats = async () => pc ? Array.from((await pc.getStats()).values()).filter(r => ['inbound-rtp', 'outbound-rtp', 'media-source'].includes(r.type)).map(r => ({ type: r.type, kind: r.kind, mid: r.mid, audioLevel: r.audioLevel, totalAudioEnergy: r.totalAudioEnergy, packetsReceived: r.packetsReceived, packetsSent: r.packetsSent, bytesSent: r.bytesSent })) : [];
 })();
